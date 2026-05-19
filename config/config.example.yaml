@@ -1,0 +1,86 @@
+# Personal Work Blackbox 配置文件
+# 复制此文件为 config.yaml 并填入你的 API Key
+# 修改后需重启应用生效
+
+# ==================== 采集设置 ====================
+collection:
+  # 窗口追踪
+  window_poll_interval: 1          # 窗口轮询间隔（秒）
+
+  # 键盘记录
+  keyboard_enabled: true           # 是否启用键盘记录
+  capture_hotkeys: true            # 是否记录快捷键
+
+  # 剪贴板
+  clipboard_enabled: true          # 是否启用剪贴板监控
+  clipboard_max_length: 10240      # 单条剪贴板记录最大长度（字节）
+
+  # 空闲检测
+  idle_threshold: 300              # 空闲阈值（秒）
+
+# ==================== 隐私设置 ====================
+privacy:
+  # 应用黑名单（这些应用的键盘输入不会被记录）
+  app_blacklist:
+    - "1password.exe"
+    - "bitwarden.exe"
+    - "dashlane.exe"
+    - "keepass.exe"
+    - "keepassxc.exe"
+
+  # 窗口标题过滤关键词
+  title_filter_keywords:
+    - "银行"
+    - "bank"
+    - "登录"
+    - "login"
+
+  # 自定义内容过滤正则
+  custom_filter_patterns: []
+
+  # 隐私模式持续时间（分钟）
+  privacy_mode_duration: 30
+
+# ==================== 存储设置 ====================
+storage:
+  db_path: "./data/blackbox.db"
+  markdown_export_dir: "./data/logs"
+  retention_days: 90
+  auto_archive: true
+
+# ==================== AI 设置 ====================
+ai:
+  default_provider: "glm"
+  auto_report_time: "18:00"
+
+  # 智谱 AI (GLM) — 国内直连，速度快
+  glm:
+    api_key: "your-api-key-here"          # [必填] 请替换为你的智谱 API Key
+    model: "glm-4-flash"                  # glm-4-flash（快速）| glm-4.5-flash（均衡）| glm-4.7（最强）
+    base_url: "https://open.bigmodel.cn/api/paas/v4"
+
+  ollama:
+    base_url: "http://localhost:11434"
+    model: "qwen2.5:7b"
+    temperature: 0.3
+
+  deepseek:
+    api_key: ""                            # 可选
+    model: "deepseek-chat"
+    base_url: "https://api.deepseek.com/v1"
+
+  openai:
+    api_key: ""                            # 可选
+    model: "gpt-4o-mini"
+    base_url: "https://api.openai.com/v1"
+
+# ==================== 性能设置 ====================
+performance:
+  input_buffer_max_length: 5000
+  input_buffer_timeout: 30
+  journal_mode: "WAL"
+
+# ==================== 通知设置 ====================
+notification:
+  on_report_generated: true
+  on_privacy_mode: true

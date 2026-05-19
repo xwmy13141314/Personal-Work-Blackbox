@@ -1,0 +1,11 @@
+[project]
+name = "personal-work-blackbox"
+version = "0.1.0"
+description = "轻量化个人工作日志自动化采集与 AI 摘要工具"
+requires-python = ">=3.11"
+readme = "README.md"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]

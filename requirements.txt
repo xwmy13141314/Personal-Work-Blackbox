@@ -1,0 +1,24 @@
+# Personal Work Blackbox - 依赖清单
+# Python 3.11+
+
+# ===== 采集层 =====
+pynput>=1.7.6              # 键盘/鼠标监听（WH_KEYBOARD_LL 封装）
+pywin32>=306               # Win32 API 调用（窗口追踪、剪贴板、空闲检测）
+
+# ===== 存储层 =====
+# SQLite 为 Python 内置，无需额外安装
+
+# ===== AI 层 =====
+httpx>=0.27.0              # 异步 HTTP 客户端（调用 Ollama / DeepSeek API）
+
+# ===== 交互层 =====
+pystray>=0.19.5            # 系统托盘图标
+Pillow>=10.0.0             # 图标生成（pystray 依赖）
+
+# ===== 配置与工具 =====
+pyyaml>=6.0                # YAML 配置文件解析
+pydantic>=2.5.0            # 数据模型验证
+
+# ===== 开发依赖 =====
+pytest>=8.0.0              # 单元测试
+pytest-asyncio>=0.23.0     # 异步测试支持
