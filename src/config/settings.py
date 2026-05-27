@@ -30,6 +30,11 @@ class Settings:
 
     def __init__(self, config_path: str | Path | None = None):
         self._config_path = Path(config_path) if config_path else None
+        # 推导应用根目录：配置文件所在目录的上级（config/config.yaml → app_root/）
+        if self._config_path:
+            self._app_root = self._config_path.parent.parent.resolve()
+        else:
+            self._app_root = Path.cwd()
         self._data: dict[str, Any] = deepcopy(DEFAULTS)
         self._load()
 
@@ -91,13 +96,20 @@ class Settings:
                 return default
         return value
 
+    def _resolve_path(self, raw_path: str) -> Path:
+        """将配置中的路径解析为绝对路径（相对路径基于应用根目录）"""
+        p = Path(raw_path)
+        if p.is_absolute():
+            return p
+        return (self._app_root / p).resolve()
+
     @property
     def db_path(self) -> Path:
-        return Path(self.storage["db_path"])
+        return self._resolve_path(self.storage["db_path"])
 
     @property
     def markdown_dir(self) -> Path:
-        return Path(self.storage["markdown_export_dir"])
+        return self._resolve_path(self.storage["markdown_export_dir"])
 
     def ensure_dirs(self):
         """确保所有必要目录存在"""

@@ -1,6 +1,7 @@
 """AI 层单元测试 — PromptEngine + LLMClient"""
 
 import pytest
+import httpx
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.ai.prompt_engine import PromptEngine, BUILTIN_SYSTEM_PROMPT, BUILTIN_USER_TEMPLATE
@@ -63,16 +64,30 @@ class TestPromptEngine:
         """测试周报 Prompt 构建"""
         engine = PromptEngine()
 
-        daily_reports = [
-            {"date": "2026-05-12", "structured_report": "完成了认证模块"},
-            {"date": "2026-05-13", "structured_report": "修复了 Bug"},
-        ]
+        data = {
+            "daily_reports": [
+                {"date": "2026-05-12", "structured_report": "完成了认证模块"},
+                {"date": "2026-05-13", "structured_report": "修复了 Bug"},
+            ],
+            "app_usage_stats": [
+                {"process_name": "code.exe", "active_seconds": 7200, "session_count": 5},
+            ],
+            "period_start": "2026-05-11",
+            "period_end": "2026-05-17",
+            "total_days": 7,
+            "report_days": 2,
+            "missing_dates": ["2026-05-11", "2026-05-14", "2026-05-15", "2026-05-16", "2026-05-17"],
+        }
 
-        messages = engine.build_weekly_prompt(daily_reports)
+        messages = engine.build_weekly_prompt(data)
 
         assert len(messages) == 2
+        assert messages[0]["role"] == "system"
+        assert "周报" in messages[0]["content"]
         assert "2026-05-12" in messages[1]["content"]
         assert "2026-05-13" in messages[1]["content"]
+        assert "2026-05-11 ~ 2026-05-17" in messages[1]["content"]
+        assert "code.exe" in messages[1]["content"]
 
     def test_app_stats_formatting(self):
         """测试应用统计格式化"""
@@ -168,6 +183,7 @@ class TestLLMClient:
         """测试降级机制"""
         config = {
             "default_provider": "ollama",
+            "max_retries": 1,  # 测试时不重试，避免等待
             "ollama": {"base_url": "http://localhost:11434", "model": "test"},
             "deepseek": {"api_key": "sk-test", "model": "deepseek-chat"},
         }
@@ -194,6 +210,7 @@ class TestLLMClient:
         """测试所有提供商均失败"""
         config = {
             "default_provider": "ollama",
+            "max_retries": 1,  # 测试时不重试，避免等待
             "ollama": {"base_url": "http://localhost:11434", "model": "test"},
         }
         client = LLMClient(config)
@@ -243,6 +260,7 @@ class TestProviderAvailability:
         """测试 Ollama 失败后降级到 GLM"""
         config = {
             "default_provider": "ollama",
+            "max_retries": 1,  # 测试时不重试，避免等待
             "ollama": {"base_url": "http://localhost:11434", "model": "test"},
             "glm": {"api_key": "test-key", "model": "glm-4-flash"},
         }
@@ -262,3 +280,118 @@ class TestProviderAvailability:
         )
         assert result == "GLM 回复"
         assert provider == "glm"
+
+
+# ==================== 重试机制测试 ====================
+
+
+class TestRetryMechanism:
+    """LLM 重试和诊断功能测试"""
+
+    @pytest.mark.asyncio
+    async def test_retry_configurable(self):
+        """测试重试次数可配置"""
+        config = {
+            "default_provider": "glm",
+            "max_retries": 1,
+            "retry_delays": [0],
+            "glm": {"api_key": "test-key", "model": "glm-4-flash"},
+        }
+        client = LLMClient(config)
+        assert client._max_retries == 1
+        assert client._retry_delays == [0]
+
+    @pytest.mark.asyncio
+    async def test_config_error_not_retried(self):
+        """测试配置错误（ValueError）不触发重试，直接抛出"""
+        config = {
+            "default_provider": "glm",
+            "max_retries": 3,
+            "retry_delays": [0, 0, 0],
+            "glm": {"api_key": "", "model": "glm-4-flash"},  # 空 key
+        }
+        client = LLMClient(config)
+
+        # 完整流程：ValueError 被捕获 → 无其他提供商 → RuntimeError
+        with pytest.raises(RuntimeError, match="所有 LLM 提供商均不可用"):
+            await client.complete([{"role": "user", "content": "test"}])
+
+    @pytest.mark.asyncio
+    async def test_config_error_no_retry_in_direct_call(self):
+        """测试 _call_with_retry 对 ValueError 不重试，立即抛出"""
+        config = {
+            "default_provider": "glm",
+            "max_retries": 3,
+            "retry_delays": [0, 0, 0],
+            "glm": {"api_key": "", "model": "glm-4-flash"},
+        }
+        client = LLMClient(config)
+
+        with pytest.raises(ValueError, match="GLM API Key 未配置"):
+            await client._call_with_retry("glm", [{"role": "user", "content": "test"}])
+
+    @pytest.mark.asyncio
+    async def test_network_error_retried(self):
+        """测试网络错误触发重试"""
+        call_count = 0
+
+        class FakeProvider:
+            def is_available(self):
+                return True
+            def test_connectivity(self):
+                return False, "fake"
+            async def complete(self, messages):
+                nonlocal call_count
+                call_count += 1
+                if call_count < 3:
+                    raise ConnectionError("网络不可达")
+                return "重试成功"
+
+        config = {
+            "default_provider": "fake",
+            "max_retries": 3,
+            "retry_delays": [0, 0, 0],
+        }
+        client = LLMClient(config)
+        client._providers["fake"] = FakeProvider()
+
+        result, provider = await client.complete([{"role": "user", "content": "test"}])
+        assert result == "重试成功"
+        assert call_count == 3  # 第1次失败、第2次失败、第3次成功
+
+    def test_diagnose(self):
+        """测试诊断功能"""
+        config = {
+            "default_provider": "glm",
+            "glm": {"api_key": "test-key", "model": "glm-4-flash"},
+        }
+        client = LLMClient(config)
+        results = client.diagnose()
+
+        assert len(results) == 1
+        assert results[0]["provider"] == "glm"
+        assert results[0]["configured"] is True
+        # reachable 可能为 True 或 False（取决于网络环境），只检查字段存在
+        assert "reachable" in results[0]
+        assert "detail" in results[0]
+
+    def test_is_retryable_error(self):
+        """测试错误分类逻辑"""
+        from src.ai.llm_client import _is_retryable_error
+
+        # 配置错误 → 不重试
+        assert _is_retryable_error(ValueError("API Key 未配置")) is False
+
+        # 网络错误 → 重试
+        assert _is_retryable_error(ConnectionError("连接失败")) is True
+        assert _is_retryable_error(TimeoutError("超时")) is True
+        assert _is_retryable_error(OSError("网络不可达")) is True
+
+        # HTTP 429 限流 → 重试
+        mock_resp = MagicMock()
+        mock_resp.status_code = 429
+        assert _is_retryable_error(httpx.HTTPStatusError("429", request=MagicMock(), response=mock_resp)) is True
+
+        # HTTP 400 客户端错误 → 不重试
+        mock_resp.status_code = 400
+        assert _is_retryable_error(httpx.HTTPStatusError("400", request=MagicMock(), response=mock_resp)) is False

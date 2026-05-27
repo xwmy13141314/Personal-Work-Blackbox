@@ -14,6 +14,7 @@ from .models import (
     TextSegmentRecord,
     ClipboardRecordModel,
     DailyReportRecord,
+    PeriodReportRecord,
     WindowEventRecord,
 )
 
@@ -78,6 +79,21 @@ CREATE TABLE IF NOT EXISTS daily_reports (
     token_count       INTEGER DEFAULT 0
 );
 
+-- AI 周报/月报
+CREATE TABLE IF NOT EXISTS period_reports (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_type       TEXT NOT NULL,
+    period_start      TEXT NOT NULL,
+    period_end        TEXT NOT NULL,
+    report_label      TEXT NOT NULL,
+    structured_report TEXT NOT NULL,
+    model_used        TEXT NOT NULL,
+    generated_at      TEXT NOT NULL,
+    format            TEXT DEFAULT 'markdown',
+    token_count       INTEGER DEFAULT 0,
+    UNIQUE(report_type, period_start)
+);
+
 -- 索引
 CREATE INDEX IF NOT EXISTS idx_sessions_start ON sessions(start_time);
 CREATE INDEX IF NOT EXISTS idx_sessions_process ON sessions(process_name);
@@ -86,6 +102,7 @@ CREATE INDEX IF NOT EXISTS idx_text_segments_session ON text_segments(session_id
 CREATE INDEX IF NOT EXISTS idx_text_segments_timestamp ON text_segments(timestamp);
 CREATE INDEX IF NOT EXISTS idx_clipboard_timestamp ON clipboard_records(timestamp);
 CREATE INDEX IF NOT EXISTS idx_reports_date ON daily_reports(report_date);
+CREATE INDEX IF NOT EXISTS idx_period_reports_type ON period_reports(report_type, period_start);
 """
 
 
@@ -347,3 +364,73 @@ class Database:
             }
             for row in rows
         ]
+
+    # ==================== 跨日统计 ====================
+
+    def query_app_usage_stats_range(self, start_date: str, end_date: str) -> list[dict]:
+        """查询日期范围内的应用使用统计"""
+        with self._cursor() as cur:
+            cur.execute(
+                """SELECT process_name,
+                    COUNT(*) as session_count,
+                    SUM(active_seconds) as total_active,
+                    SUM(idle_seconds) as total_idle
+                    FROM sessions
+                    WHERE DATE(start_time) BETWEEN ? AND ?
+                    GROUP BY process_name
+                    ORDER BY total_active DESC""",
+                (start_date, end_date),
+            )
+            rows = cur.fetchall()
+
+        return [
+            {
+                "process_name": row[0],
+                "session_count": row[1],
+                "active_seconds": row[2] or 0,
+                "idle_seconds": row[3] or 0,
+            }
+            for row in rows
+        ]
+
+    # ==================== 周报/月报 CRUD ====================
+
+    def insert_period_report(self, report: PeriodReportRecord):
+        """插入或替换一条周报/月报"""
+        with self._cursor() as cur:
+            cur.execute(
+                """INSERT OR REPLACE INTO period_reports
+                   (report_type, period_start, period_end, report_label,
+                    structured_report, model_used, generated_at, format, token_count)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    report.report_type, report.period_start,
+                    report.period_end, report.report_label,
+                    report.structured_report, report.model_used,
+                    report.generated_at, report.format, report.token_count,
+                ),
+            )
+
+    def query_period_report(
+        self, report_type: str, period_start: str
+    ) -> PeriodReportRecord | None:
+        """查询指定类型的周期报告"""
+        with self._cursor() as cur:
+            cur.execute(
+                """SELECT id, report_type, period_start, period_end, report_label,
+                    structured_report, model_used, generated_at, format, token_count
+                    FROM period_reports
+                    WHERE report_type = ? AND period_start = ?""",
+                (report_type, period_start),
+            )
+            row = cur.fetchone()
+
+        if not row:
+            return None
+
+        return PeriodReportRecord(
+            id=row[0], report_type=row[1], period_start=row[2],
+            period_end=row[3], report_label=row[4],
+            structured_report=row[5], model_used=row[6],
+            generated_at=row[7], format=row[8], token_count=row[9],
+        )

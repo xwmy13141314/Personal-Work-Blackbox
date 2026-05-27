@@ -3,6 +3,7 @@ data/
 *.db
 *.db-shm
 *.db-wal
+*.db.bak
 
 # ==================== 日志 ====================
 blackbox.log
@@ -12,6 +13,11 @@ blackbox.log
 config/config.yaml
 config/config.local.yaml
 # 保留 config.example.yaml 作为模板
+
+# v2.2 分发包中的敏感文件
+Personal_Work_Blackbox_v2.2/config/config.yaml
+Personal_Work_Blackbox_v2.2/data/
+Personal_Work_Blackbox_v2.2/blackbox.log
 
 # ==================== Python ====================
 __pycache__/
@@ -50,8 +56,9 @@ ehthumbs.db
 .coverage
 htmlcov/
 
-# ==================== 打包分发包 ====================
+# ==================== 打包分发包（含 exe 和用户数据） ====================
 Personal_Work_Blackbox_v2.0/
+Personal_Work_Blackbox_v2.2/PersonalWorkBlackbox.exe
 
 # ==================== Windows 误创建文件 ====================
 nul
@@ -60,5 +67,5 @@ cd
 # ==================== Claude Code ====================
 .claude/
 
-# ==================== 原始需求文档（可选） ====================
-# 轻量化数据采集.docx
+# ==================== 生成的报告（含个人工作内容） ====================
+work_report*.html

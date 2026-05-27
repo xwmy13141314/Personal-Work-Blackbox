@@ -16,10 +16,14 @@ from threading import Event
 
 
 def get_app_root() -> Path:
-    """获取应用根目录（兼容 PyInstaller 打包和源码运行）"""
+    """获取应用根目录（兼容 PyInstaller 打包和源码运行）
+
+    打包版：exe 同级目录（exe 旁有 config/、data/ 等文件夹）
+    源码版：src/ 的上级目录
+    """
     if getattr(sys, 'frozen', False):
-        # 打包版：项目根目录 = exe 的上级目录（exe 在 dist/ 下）
-        return Path(sys.executable).parent.parent
+        # 打包版：使用 exe 所在目录（而非上级目录）
+        return Path(sys.executable).parent
     return Path(__file__).parent.parent
 
 
@@ -75,12 +79,57 @@ from src.storage.models import (
 logger = logging.getLogger(__name__)
 
 
+def _migrate_legacy_data(settings: Settings) -> None:
+    """一次性迁移：检测旧版本遗留的数据目录（exe 上级目录），自动合并到当前位置"""
+    if not getattr(sys, 'frozen', False):
+        return  # 仅打包版需要迁移
+
+    import shutil
+    import sqlite3
+
+    current_db = settings.db_path
+    # 旧版 get_app_root() 返回 exe 的 parent.parent（上级目录）
+    legacy_root = Path(sys.executable).parent.parent
+    legacy_db = (legacy_root / settings.storage["db_path"]).resolve()
+
+    # 无需迁移的条件：旧位置不存在，或与当前位置相同
+    if not legacy_db.exists() or legacy_db == current_db:
+        return
+
+    # 当前位置已有数据，跳过迁移
+    if current_db.exists():
+        conn = sqlite3.connect(str(current_db))
+        try:
+            count = conn.execute("SELECT count(*) FROM sessions").fetchone()[0]
+            if count > 0:
+                return  # 当前 DB 有数据，不覆盖
+        finally:
+            conn.close()
+
+    # 执行迁移
+    current_db.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(str(legacy_db), str(current_db))
+    logger.info("已从旧位置迁移数据库: %s → %s", legacy_db, current_db)
+
+    # 迁移日志目录
+    legacy_logs = (legacy_root / settings.storage["markdown_export_dir"]).resolve()
+    current_logs = settings.markdown_dir
+    if legacy_logs.exists() and legacy_logs != current_logs:
+        for f in legacy_logs.iterdir():
+            if f.is_file():
+                shutil.copy2(str(f), str(current_logs / f.name))
+        logger.info("已从旧位置迁移日志文件: %s → %s", legacy_logs, current_logs)
+
+
 class BlackboxEngine:
     """核心引擎：协调采集 → 处理 → 存储"""
 
     def __init__(self, config_path: str | Path | None = None):
         self._settings = Settings.get_instance(config_path)
         self._settings.ensure_dirs()
+
+        # 旧版数据迁移（仅打包版首次运行时执行）
+        _migrate_legacy_data(self._settings)
 
         # 初始化各层组件
         self._db = Database(
@@ -254,8 +303,26 @@ class BlackboxEngine:
             )
             logger.info("AI 摘要层已初始化，提供商: %s", ai_config.get("default_provider"))
 
+            # 自动补生成缺失的日报
+            self._auto_generate_missing_reports()
+
         except Exception:
             logger.exception("AI 层初始化失败")
+
+    def _auto_generate_missing_reports(self):
+        """后台线程自动补生成缺失的日报"""
+        import threading
+
+        def _worker():
+            try:
+                generated = self._report_generator.auto_generate_missing(days=7)
+                if generated:
+                    logger.info("自动补生成日报完成: %s", generated)
+            except Exception:
+                logger.exception("自动补生成日报异常")
+
+        t = threading.Thread(target=_worker, daemon=True, name="AutoReportGen")
+        t.start()
 
     def generate_daily_report(self, date: str | None = None) -> str | None:
         """手动触发生成日报"""
@@ -287,6 +354,49 @@ class BlackboxEngine:
             return None
         target_date = date or datetime.now().strftime("%Y-%m-%d")
         return self._db.query_daily_report(target_date)
+
+    def generate_weekly_report(self, date: str | None = None) -> str | None:
+        """生成周报"""
+        if not self._report_generator:
+            logger.warning("AI 层未初始化，无法生成周报")
+            return None
+        if not self._db.is_connected:
+            logger.warning("数据库未连接，无法生成周报")
+            return None
+        try:
+            return self._report_generator.generate_period_sync("weekly", date)
+        except Exception:
+            logger.exception("周报生成失败")
+            return None
+
+    def generate_monthly_report(self, date: str | None = None) -> str | None:
+        """生成月报"""
+        if not self._report_generator:
+            logger.warning("AI 层未初始化，无法生成月报")
+            return None
+        if not self._db.is_connected:
+            logger.warning("数据库未连接，无法生成月报")
+            return None
+        try:
+            return self._report_generator.generate_period_sync("monthly", date)
+        except Exception:
+            logger.exception("月报生成失败")
+            return None
+
+    def get_period_report(self, report_type: str, date: str | None = None):
+        """查询已有的周报/月报"""
+        if not self._db.is_connected:
+            return None
+        target_date = date or datetime.now().strftime("%Y-%m-%d")
+        # 根据 date 计算周期起始日
+        from src.ai.report_generator import _week_range, _month_range
+        if report_type == "weekly":
+            period_start, _ = _week_range(target_date)
+        elif report_type == "monthly":
+            period_start, _ = _month_range(target_date)
+        else:
+            return None
+        return self._db.query_period_report(report_type, period_start)
 
     # ==================== 事件处理 ====================
 

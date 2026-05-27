@@ -67,3 +67,18 @@ class DailyReportRecord:
     generated_at: str = ""
     format: str = "markdown"
     token_count: int = 0
+
+
+@dataclass
+class PeriodReportRecord:
+    """AI 周报/月报记录"""
+    id: Optional[int] = None
+    report_type: str = ""         # 'weekly' | 'monthly'
+    period_start: str = ""        # YYYY-MM-DD（周一/月初）
+    period_end: str = ""          # YYYY-MM-DD（周日/月末）
+    report_label: str = ""        # 显示标签，如 "2026-W21" 或 "2026-05"
+    structured_report: str = ""
+    model_used: str = ""
+    generated_at: str = ""
+    format: str = "markdown"
+    token_count: int = 0

@@ -7,12 +7,19 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import datetime
 
-from src.ai.report_generator import ReportGenerator
+from src.ai.report_generator import (
+    ReportGenerator,
+    _week_range,
+    _month_range,
+    _week_label,
+    _month_label,
+)
 from src.ai.prompt_engine import PromptEngine
 from src.storage.models import (
     SessionRecord,
     TextSegmentRecord,
     DailyReportRecord,
+    PeriodReportRecord,
 )
 
 
@@ -27,6 +34,9 @@ def mock_db():
     db.query_daily_report.return_value = None
     db.query_text_segments.return_value = []
     db.insert_daily_report = MagicMock()
+    db.query_period_report.return_value = None
+    db.query_app_usage_stats_range.return_value = []
+    db.insert_period_report = MagicMock()
     return db
 
 
@@ -154,7 +164,6 @@ class TestDailyReport:
         result = await generator.generate_daily_report("2026-05-15")
 
         assert result is not None
-        # INSERT OR REPLACE 会自动覆盖
 
     @pytest.mark.asyncio
     async def test_generate_default_date(self, generator, mock_db, mock_llm):
@@ -180,13 +189,25 @@ class TestWeeklyReport:
             DailyReportRecord(
                 report_date=d, structured_report=f"日报 {d}",
                 model_used="glm", generated_at=f"{d}T18:00:00",
-            ) if d in ["2026-05-09", "2026-05-10"] else None
+            ) if d in ["2026-05-11", "2026-05-12"] else None
         )
+        mock_db.query_app_usage_stats_range.return_value = [
+            {"process_name": "code.exe", "active_seconds": 7200, "session_count": 10},
+        ]
 
+        # 2026-05-15 是周五，所在自然周是 05-11(周一) ~ 05-17(周日)
         result = await generator.generate_weekly_report("2026-05-15")
 
         assert result is not None
         mock_llm.complete.assert_called_once()
+        mock_db.insert_period_report.assert_called_once()
+
+        # 验证持久化记录
+        record = mock_db.insert_period_report.call_args[0][0]
+        assert isinstance(record, PeriodReportRecord)
+        assert record.report_type == "weekly"
+        assert record.period_start == "2026-05-11"
+        assert record.period_end == "2026-05-17"
 
     @pytest.mark.asyncio
     async def test_generate_no_daily_reports(self, generator, mock_db, mock_llm):
@@ -197,6 +218,105 @@ class TestWeeklyReport:
 
         assert result is None
         mock_llm.complete.assert_not_called()
+        mock_db.insert_period_report.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_generate_overwrites_existing(self, generator, mock_db, mock_llm):
+        """已有周报时应覆盖"""
+        mock_db.query_period_report.return_value = PeriodReportRecord(
+            report_type="weekly", period_start="2026-05-11",
+            structured_report="旧周报",
+        )
+        mock_db.query_daily_report.side_effect = lambda d: (
+            DailyReportRecord(
+                report_date=d, structured_report=f"日报 {d}",
+                model_used="glm", generated_at=f"{d}T18:00:00",
+            ) if d == "2026-05-11" else None
+        )
+        mock_db.query_app_usage_stats_range.return_value = []
+
+        result = await generator.generate_weekly_report("2026-05-15")
+
+        assert result is not None
+        mock_db.insert_period_report.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_generate_llm_failure(self, generator, mock_db, mock_llm):
+        """LLM 调用失败时应返回 None 且不持久化"""
+        mock_db.query_daily_report.side_effect = lambda d: (
+            DailyReportRecord(
+                report_date=d, structured_report=f"日报 {d}",
+                model_used="glm", generated_at=f"{d}T18:00:00",
+            ) if d == "2026-05-11" else None
+        )
+        mock_db.query_app_usage_stats_range.return_value = []
+        mock_llm.complete = AsyncMock(side_effect=Exception("API Error"))
+
+        result = await generator.generate_weekly_report("2026-05-15")
+
+        assert result is None
+        mock_db.insert_period_report.assert_not_called()
+
+
+# ==================== 月报生成 ====================
+
+class TestMonthlyReport:
+    """月报生成测试"""
+
+    @pytest.mark.asyncio
+    async def test_generate_with_daily_reports(self, generator, mock_db, mock_llm):
+        """有日报数据时应生成月报"""
+        mock_db.query_daily_report.side_effect = lambda d: (
+            DailyReportRecord(
+                report_date=d, structured_report=f"日报 {d}",
+                model_used="glm", generated_at=f"{d}T18:00:00",
+            ) if d in ["2026-05-01", "2026-05-02", "2026-05-15"] else None
+        )
+        mock_db.query_app_usage_stats_range.return_value = [
+            {"process_name": "code.exe", "active_seconds": 14400, "session_count": 30},
+        ]
+
+        result = await generator.generate_monthly_report("2026-05-15")
+
+        assert result is not None
+        mock_llm.complete.assert_called_once()
+        mock_db.insert_period_report.assert_called_once()
+
+        record = mock_db.insert_period_report.call_args[0][0]
+        assert isinstance(record, PeriodReportRecord)
+        assert record.report_type == "monthly"
+        assert record.period_start == "2026-05-01"
+        assert record.period_end == "2026-05-31"
+        assert record.report_label == "2026-05"
+
+    @pytest.mark.asyncio
+    async def test_generate_no_daily_reports(self, generator, mock_db, mock_llm):
+        """无日报数据时应返回 None"""
+        mock_db.query_daily_report.return_value = None
+
+        result = await generator.generate_monthly_report("2026-05-15")
+
+        assert result is None
+        mock_llm.complete.assert_not_called()
+        mock_db.insert_period_report.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_generate_december_boundary(self, generator, mock_db, mock_llm):
+        """12月月报日期范围应正确处理跨年"""
+        mock_db.query_daily_report.side_effect = lambda d: (
+            DailyReportRecord(
+                report_date=d, structured_report=f"日报 {d}",
+                model_used="glm", generated_at=f"{d}T18:00:00",
+            ) if d == "2026-12-01" else None
+        )
+        mock_db.query_app_usage_stats_range.return_value = []
+
+        result = await generator.generate_monthly_report("2026-12-25")
+
+        assert result is not None
+        record = mock_db.insert_period_report.call_args[0][0]
+        assert record.period_start == "2026-12-01"
+        assert record.period_end == "2026-12-31"
 
 
 # ==================== 同步包装 ====================
@@ -204,8 +324,8 @@ class TestWeeklyReport:
 class TestGenerateSync:
     """同步包装方法测试"""
 
-    def test_generate_sync_calls_async(self, generator, mock_db, mock_llm):
-        """generate_sync 应调用异步版本"""
+    def test_generate_sync_daily(self, generator, mock_db, mock_llm):
+        """generate_sync 应调用日报异步版本"""
         mock_db.query_sessions.return_value = [_make_session()]
         mock_db.query_text_segments.return_value = []
 
@@ -220,6 +340,103 @@ class TestGenerateSync:
         result = generator.generate_sync("2026-05-15")
 
         assert result is None
+
+    def test_generate_period_sync_weekly(self, generator, mock_db, mock_llm):
+        """generate_period_sync 应调用周报异步版本"""
+        mock_db.query_daily_report.side_effect = lambda d: (
+            DailyReportRecord(
+                report_date=d, structured_report=f"日报 {d}",
+                model_used="glm", generated_at=f"{d}T18:00:00",
+            ) if d == "2026-05-11" else None
+        )
+        mock_db.query_app_usage_stats_range.return_value = []
+
+        result = generator.generate_period_sync("weekly", "2026-05-15")
+
+        assert result is not None
+
+    def test_generate_period_sync_monthly(self, generator, mock_db, mock_llm):
+        """generate_period_sync 应调用月报异步版本"""
+        mock_db.query_daily_report.side_effect = lambda d: (
+            DailyReportRecord(
+                report_date=d, structured_report=f"日报 {d}",
+                model_used="glm", generated_at=f"{d}T18:00:00",
+            ) if d == "2026-05-01" else None
+        )
+        mock_db.query_app_usage_stats_range.return_value = []
+
+        result = generator.generate_period_sync("monthly", "2026-05-15")
+
+        assert result is not None
+
+    def test_generate_period_sync_invalid_type(self, generator):
+        """不支持的报告类型应抛出 ValueError"""
+        with pytest.raises(ValueError, match="不支持的报告类型"):
+            generator.generate_period_sync("quarterly", "2026-05-15")
+
+
+# ==================== 日期范围工具函数 ====================
+
+class TestDateRangeUtils:
+    """日期范围计算工具函数测试"""
+
+    def test_week_range_monday(self):
+        """周一的日期，自然周就是当天到周日"""
+        start, end = _week_range("2026-05-11")  # 周一
+        assert start == "2026-05-11"
+        assert end == "2026-05-17"
+
+    def test_week_range_sunday(self):
+        """周日的日期，自然周应为前一个周一到当天"""
+        start, end = _week_range("2026-05-17")  # 周日
+        assert start == "2026-05-11"
+        assert end == "2026-05-17"
+
+    def test_week_range_wednesday(self):
+        """周三的日期，自然周应为前一个周一到后一个周日"""
+        start, end = _week_range("2026-05-13")  # 周三
+        assert start == "2026-05-11"
+        assert end == "2026-05-17"
+
+    def test_month_range_first_day(self):
+        """月初第一天"""
+        start, end = _month_range("2026-05-01")
+        assert start == "2026-05-01"
+        assert end == "2026-05-31"
+
+    def test_month_range_last_day(self):
+        """月末最后一天"""
+        start, end = _month_range("2026-05-31")
+        assert start == "2026-05-01"
+        assert end == "2026-05-31"
+
+    def test_month_range_february_leap(self):
+        """闰年2月"""
+        start, end = _month_range("2028-02-15")
+        assert start == "2028-02-01"
+        assert end == "2028-02-29"
+
+    def test_month_range_february_non_leap(self):
+        """非闰年2月"""
+        start, end = _month_range("2026-02-15")
+        assert start == "2026-02-01"
+        assert end == "2026-02-28"
+
+    def test_month_range_december(self):
+        """12月跨年"""
+        start, end = _month_range("2026-12-25")
+        assert start == "2026-12-01"
+        assert end == "2026-12-31"
+
+    def test_week_label(self):
+        """周标签格式"""
+        label = _week_label("2026-05-11")
+        assert label.startswith("2026-W")
+
+    def test_month_label(self):
+        """月标签格式"""
+        label = _month_label("2026-05-01")
+        assert label == "2026-05"
 
 
 # ==================== 辅助方法 ====================

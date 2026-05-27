@@ -53,6 +53,13 @@ COLORS = {
     "border": "#404060",
 }
 
+# 报告类型配置
+REPORT_TYPES = {
+    "日报": "daily",
+    "周报": "weekly",
+    "月报": "monthly",
+}
+
 
 class BlackboxGUI:
     """主界面"""
@@ -136,9 +143,24 @@ class BlackboxGUI:
         )
         ai_title.pack(fill=X)
 
-        # 第一行：日期选择 + 前后按钮 + 生成/查看按钮
+        # 第一行：报告类型 + 日期选择 + 前后按钮 + 生成/查看按钮
         ai_row1 = Frame(ai_frame, bg=COLORS["bg"])
         ai_row1.pack(fill=X, pady=(4, 0))
+
+        # 报告类型选择
+        self.report_type_var = StringVar(value="日报")
+        type_label = Label(
+            ai_row1, text="类型:", font=("Segoe UI", 10),
+            fg=COLORS["text_dim"], bg=COLORS["bg"],
+        )
+        type_label.pack(side=LEFT)
+
+        self.type_combo = ttk.Combobox(
+            ai_row1, textvariable=self.report_type_var, font=("Segoe UI", 10),
+            width=6, justify=CENTER, state="readonly",
+            values=list(REPORT_TYPES.keys()),
+        )
+        self.type_combo.pack(side=LEFT, padx=(4, 8), ipady=2)
 
         date_label = Label(
             ai_row1, text="日期:", font=("Segoe UI", 10),
@@ -229,7 +251,7 @@ class BlackboxGUI:
         bottom.pack_propagate(False)
 
         self.bottom_label = Label(
-            bottom, text="Personal Work Blackbox v2.0 | Ctrl+Alt+P 暂停 | Ctrl+Alt+R 报告",
+            bottom, text="Personal Work Blackbox v2.2 | Ctrl+Alt+P 暂停 | Ctrl+Alt+R 报告",
             font=("Segoe UI", 8), fg=COLORS["text_dim"], bg=COLORS["surface"],
         )
         self.bottom_label.pack(side=LEFT, padx=12, pady=4)
@@ -314,6 +336,10 @@ class BlackboxGUI:
 
     # ==================== AI 报告 ====================
 
+    def _get_report_type(self) -> str:
+        """获取当前选择的报告类型（返回英文标识）"""
+        return REPORT_TYPES.get(self.report_type_var.get(), "daily")
+
     def _get_selected_date(self) -> str:
         """获取日期输入框的值，格式校验"""
         date_str = self.date_var.get().strip()
@@ -323,8 +349,20 @@ class BlackboxGUI:
         except ValueError:
             return datetime.now().strftime("%Y-%m-%d")
 
+    def _get_report_title(self, report_type: str) -> str:
+        """获取报告类型的中文名称"""
+        for name, type_id in REPORT_TYPES.items():
+            if type_id == report_type:
+                return name
+        return "报告"
+
     def _on_generate_report(self):
-        """生成 AI 日报"""
+        """生成 AI 报告（日报/周报/月报统一入口）"""
+        # 防抖：如果正在生成中，直接返回
+        if hasattr(self, '_generating') and self._generating:
+            self._log("报告正在生成中，请稍候...", "warning")
+            return
+
         if not self.engine:
             self._log("引擎未初始化", "error")
             return
@@ -334,49 +372,104 @@ class BlackboxGUI:
             self._log("AI 层未初始化，请检查 config.yaml 中的 api_key 配置", "error")
             return
 
+        report_type = self._get_report_type()
         target_date = self._get_selected_date()
+        type_name = self._get_report_title(report_type)
 
-        # 预校验：检查目标日期是否有采集数据
-        try:
-            sessions = self.engine._db.query_sessions(date=target_date, limit=1)
-            if not sessions:
-                self._log(f"⚠ {target_date} 没有采集数据，无法生成日报", "warning")
+        # 日报预校验：检查目标日期是否有采集数据
+        if report_type == "daily":
+            try:
+                sessions = self.engine._db.query_sessions(date=target_date, limit=1)
+                if not sessions:
+                    self._log(f"⚠ {target_date} 没有采集数据，无法生成日报", "warning")
+                    return
+            except Exception as e:
+                self._log(f"数据查询失败: {e}", "error")
                 return
-        except Exception as e:
-            self._log(f"数据查询失败: {e}", "error")
-            return
 
-        self._log(f"正在为 {target_date} 生成日报...", "info")
+        # 网络预检：快速检测 API 是否可达
+        try:
+            llm = self.engine._report_generator._llm
+            diagnosis = llm.diagnose()
+            reachable_any = any(d["reachable"] == "True" for d in diagnosis)
+            if not reachable_any:
+                details = "; ".join(f"{d['provider']}: {d['detail']}" for d in diagnosis)
+                self._log(f"⚠ 所有 AI 服务不可达: {details}", "error")
+                self._log("请检查网络连接，报告生成将在后台重试", "warning")
+        except Exception:
+            pass  # 预检失败不阻断，继续尝试
+
+        self._generating = True
+        self._log(f"正在为 {target_date} 生成{type_name}（含自动重试）...", "info")
         self.report_btn.config(state=DISABLED, text="生成中...")
         self.root.update()
 
         def _gen():
             try:
-                report = self.engine.generate_daily_report(date=target_date)
-                if report:
-                    now = datetime.now()
-                    report_path = Path(self.engine._settings.markdown_dir) / f"{target_date}_{now.strftime('%H%M%S')}_report.md"
-                    report_path.parent.mkdir(parents=True, exist_ok=True)
-                    report_path.write_text(f"# AI 每日报告 - {target_date}\n\n{report}", encoding="utf-8")
-                    self.root.after(0, lambda: self._log(f"日报已保存: {report_path.name}", "success"))
-                    self.root.after(0, lambda: self._show_report_preview(report))
+                # 根据报告类型分派
+                if report_type == "daily":
+                    report = self.engine.generate_daily_report(date=target_date)
+                elif report_type == "weekly":
+                    report = self.engine.generate_weekly_report(date=target_date)
+                elif report_type == "monthly":
+                    report = self.engine.generate_monthly_report(date=target_date)
                 else:
-                    self.root.after(0, lambda: self._log(f"{target_date} 无活动数据或 AI 调用失败，请查看 blackbox.log", "warning"))
+                    report = None
+
+                if report:
+                    report_path = self._save_report(report_type, target_date, report)
+                    self.root.after(0, lambda: self._log(
+                        f"✅ {type_name}已保存: {report_path.name}", "success"
+                    ))
+                    self.root.after(0, lambda: self._show_report_preview(report, type_name))
+                else:
+                    self.root.after(0, lambda: self._log(
+                        f"❌ {target_date} {type_name}生成失败 — 可能原因: 网络不通 / API Key 失效 / 无日报数据\n"
+                        f"  提示: 周报/月报需要先有对应日期的日报", "error"
+                    ))
             except Exception as e:
                 import traceback
-                self.root.after(0, lambda: self._log(f"日报生成失败: {e}", "error"))
-                logger.exception("日报生成异常")
+                self.root.after(0, lambda: self._log(f"❌ {type_name}生成异常: {e}", "error"))
+                logger.exception(f"{type_name}生成异常")
             finally:
+                self._generating = False
                 self.root.after(0, lambda: self.report_btn.config(state=NORMAL, text="生成报告"))
 
         threading.Thread(target=_gen, daemon=True).start()
 
-    def _show_report_preview(self, report: str):
+    def _save_report(self, report_type: str, target_date: str, report: str) -> Path:
+        """保存报告到文件，返回文件路径"""
+        report_dir = Path(self.engine._settings.markdown_dir)
+        report_dir.mkdir(parents=True, exist_ok=True)
+
+        if report_type == "daily":
+            now = datetime.now()
+            filename = f"{target_date}_{now.strftime('%H%M%S')}_report.md"
+            header = f"# AI 每日报告 - {target_date}"
+        elif report_type == "weekly":
+            from src.ai.report_generator import _week_range, _week_label
+            start, end = _week_range(target_date)
+            filename = f"{start}_weekly.md"
+            header = f"# AI 周报 - {_week_label(start)} ({start} ~ {end})"
+        elif report_type == "monthly":
+            from src.ai.report_generator import _month_range, _month_label
+            start, end = _month_range(target_date)
+            filename = f"{_month_label(start)}_monthly.md"
+            header = f"# AI 月报 - {_month_label(start)} ({start} ~ {end})"
+        else:
+            filename = f"{target_date}_report.md"
+            header = f"# AI 报告 - {target_date}"
+
+        report_path = report_dir / filename
+        report_path.write_text(f"{header}\n\n{report}", encoding="utf-8")
+        return report_path
+
+    def _show_report_preview(self, report: str, type_name: str = "日报"):
         """在日志区显示报告预览"""
         self.log_text.config(state=NORMAL)
         self.log_text.delete("1.0", "end")
         self.log_text.insert("end", "=" * 50 + "\n", "info")
-        self.log_text.insert("end", " AI 日报预览\n", "success")
+        self.log_text.insert("end", f" AI {type_name}预览\n", "success")
         self.log_text.insert("end", "=" * 50 + "\n\n", "info")
         self.log_text.insert("end", report[:3000], "info")
         if len(report) > 3000:
@@ -384,16 +477,33 @@ class BlackboxGUI:
         self.log_text.config(state=DISABLED)
 
     def _on_view_report(self):
-        """查看选中日期的报告"""
+        """查看选中日期和类型的报告"""
+        report_type = self._get_report_type()
         target_date = self._get_selected_date()
+        type_name = self._get_report_title(report_type)
         report_dir = Path(self.engine._settings.markdown_dir) if self.engine else Path("data/logs")
-        # 按日期匹配最新的报告文件
-        report_files = sorted(report_dir.glob(f"{target_date}_*_report.md"), reverse=True)
+
+        if report_type == "daily":
+            # 日报：按日期匹配最新的报告文件
+            report_files = sorted(report_dir.glob(f"{target_date}_*_report.md"), reverse=True)
+        elif report_type == "weekly":
+            # 周报：按周一日期匹配
+            from src.ai.report_generator import _week_range
+            start, _ = _week_range(target_date)
+            report_files = sorted(report_dir.glob(f"{start}_weekly.md"), reverse=True)
+        elif report_type == "monthly":
+            # 月报：按月份匹配
+            from src.ai.report_generator import _month_label
+            label = _month_label(target_date)
+            report_files = sorted(report_dir.glob(f"{label}_monthly.md"), reverse=True)
+        else:
+            report_files = []
+
         if report_files:
             os.startfile(str(report_files[0]))
-            self._log(f"已打开报告: {report_files[0].name}", "info")
+            self._log(f"已打开{type_name}: {report_files[0].name}", "info")
         else:
-            self._log(f"{target_date} 没有报告，请先生成", "warning")
+            self._log(f"{type_name}不存在，请先生成", "warning")
 
     def _on_privacy_mode(self):
         """隐私模式"""

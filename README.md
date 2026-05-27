@@ -1,14 +1,14 @@
 # Personal Work Blackbox
 
-> 轻量化个人工作日志自动化采集与 AI 摘要工具
+> 轻量化个人工作日志自动化采集与 AI 报告工具
 
-基于键盘输入流（Key-stream）+ 窗口上下文（Context）+ 剪贴板（Clipboard）的个人活动记录器，通过 AI（智谱 GLM）自动生成每日工作日报。
+基于键盘输入流（Key-stream）+ 窗口上下文（Context）+ 剪贴板（Clipboard）的个人活动记录器，通过 AI（智谱 GLM）自动生成每日工作日报、周报和月报。
 
 ## 快速开始
 
 ### 方式一：直接运行 EXE（推荐）
 
-1. 双击 `dist/PersonalWorkBlackbox.exe`
+1. 进入 `Personal_Work_Blackbox_v2.2/` 目录，双击 `PersonalWorkBlackbox.exe`
 2. 首次运行会在 exe 同级目录自动生成 `config/config.yaml`（编辑它配置 API Key）
 3. 点击「▶ 启动」开始采集
 
@@ -28,14 +28,24 @@ python -m src.main --no-tray
 ## 使用说明
 
 1. **启动采集** — 点击「▶ 启动」按钮，程序开始记录键盘输入、窗口切换和剪贴板
-2. **生成日报** — 采集一段时间后，点击「生成今日报告」调用 AI 生成结构化工作日报
-3. **查看报告** — 点击「查看今日报告」用记事本打开生成的 Markdown 报告
-4. **隐私模式** — 点击「隐私模式 (30min)」暂停所有记录 30 分钟
+2. **生成报告** — 选择报告类型（日报/周报/月报），选择日期，点击「生成报告」调用 AI 生成结构化报告
+3. **查看报告** — 点击「查看报告」用默认编辑器打开生成的 Markdown 报告
+4. **隐私模式** — 点击「隐私模式」暂停所有记录 30 分钟
 5. **快捷键** — `Ctrl+Alt+P` 暂停/恢复，`Ctrl+Alt+R` 生成报告
+
+### 报告类型
+
+| 类型 | 说明 | 文件命名 |
+|------|------|----------|
+| 日报 | 分析单日活动数据，生成工作日报 | `2026-05-22_091156_report.md` |
+| 周报 | 汇总该自然周（周一~周日）的所有日报，生成周报 | `2026-05-19_weekly.md` |
+| 月报 | 汇总该自然月的所有日报，生成月报 | `2026-05_monthly.md` |
+
+> **提示**: 周报和月报基于已有的日报汇总生成，请确保对应日期范围内已生成过日报。
 
 ## 数据存储
 
-- **数据库**: `data/blackbox.db`（SQLite WAL 模式）
+- **数据库**: `data/blackbox.db`（SQLite WAL 模式，6 张表）
 - **Markdown 日志**: `data/logs/`
 - **运行日志**: `blackbox.log`
 - **配置文件**: `config/config.yaml`
@@ -56,12 +66,12 @@ src/
 │   └── session_manager.py   #   会话管理（按应用分组）
 ├── storage/                 # 存储层
 │   ├── database.py          #   SQLite (6 表 + 索引)
-│   ├── models.py            #   数据模型
+│   ├── models.py            #   数据模型（含 PeriodReportRecord）
 │   └── markdown_exporter.py #   Markdown 日志导出
 ├── ai/                      # AI 摘要层
-│   ├── prompt_engine.py     #   Prompt 模板引擎
+│   ├── prompt_engine.py     #   Prompt 模板引擎（日报/周报/月报）
 │   ├── llm_client.py        #   统一 LLM 客户端 (Ollama/GLM/DeepSeek/OpenAI + 自动降级)
-│   └── report_generator.py  #   日报/周报生成
+│   └── report_generator.py  #   日报/周报/月报生成
 ├── ui/                      # 交互层
 │   ├── gui.py               #   tkinter GUI 操作面板
 │   ├── system_tray.py       #   系统托盘
@@ -105,7 +115,7 @@ pyinstaller blackbox.spec --clean --noconfirm
 ## 测试
 
 ```bash
-python -m pytest tests/ -v    # 140 个测试
+python -m pytest tests/ -v    # 164 个测试
 ```
 
 ## 常见问题
@@ -123,6 +133,16 @@ python -m pytest tests/ -v    # 140 个测试
 3. 用 cmd 运行 exe 观察输出：`.\PersonalWorkBlackbox.exe`
 
 ## 更新日志
+
+### v2.3 (2026-05-27)
+- **新增**: 周报生成功能 — 汇总自然周（周一~周日）内所有日报，AI 生成周报
+- **新增**: 月报生成功能 — 汇总自然月内所有日报，AI 生成月报
+- **新增**: GUI 报告类型选择器（日报/周报/月报下拉切换）
+- **新增**: `period_reports` 数据库表，持久化周报/月报
+- **新增**: 跨日期范围应用使用统计 `query_app_usage_stats_range()`
+- **改进**: 周报 Prompt 填充真实跨日统计数据（原为占位文本）
+- **改进**: 自定义模板支持 `monthly_report.yaml`
+- **测试**: 新增 18 个测试用例（总计 164 个）
 
 ### v2.2 (2026-05-19)
 - **新增**: 4 个数据库查询/统计测试（总计 140 个测试全通过）
