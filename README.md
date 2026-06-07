@@ -14,6 +14,7 @@
 - 支持从原 Blackbox SQLite 迁移历史数据
 - 支持 inbox 实时接入更多来源
 - 支持 Git、Shell、最近文件、浏览器历史快照采集
+- 支持 macOS Safari / 前台应用 / 剪贴板快照采集
 - 支持日报、周报、`.ics` 导出
 - 支持脱敏文本与原始文本分层存储
 
@@ -137,6 +138,9 @@ PYTHONPATH=src python3 -m personal_recorder collect-snapshot \
 - `shell_history`
 - `filesystem_recent`
 - `browser_history`
+- `safari_history`
+- `macos_foreground`
+- `macos_clipboard`
 
 统一采集命令：
 
