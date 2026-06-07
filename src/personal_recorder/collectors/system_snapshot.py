@@ -46,6 +46,7 @@ class SystemSnapshotCollector:
         repos = self._discover_git_repos(options.roots, limit=30)
         since = f"{options.since_hours} hours ago"
         for repo in repos:
+            events.extend(self._collect_git_repo_state(repo))
             try:
                 result = subprocess.run(
                     [
@@ -87,6 +88,70 @@ class SystemSnapshotCollector:
                     }
                 )
         return events[: options.max_events_per_source]
+
+    def _collect_git_repo_state(self, repo: Path) -> list[dict]:
+        events: list[dict] = []
+        now = datetime.now().isoformat(timespec="seconds")
+
+        branch = self._run_git(repo, ["branch", "--show-current"])
+        status = self._run_git(repo, ["status", "--short"])
+        diff_stat = self._run_git(repo, ["diff", "--stat", "--", "."])
+
+        if branch:
+            events.append(
+                {
+                    "source": "git_branch",
+                    "timestamp": now,
+                    "app_name": "git",
+                    "window_title": repo.name,
+                    "content": f"当前 Git 分支：{branch.strip()}",
+                    "project": repo.name,
+                    "tags": ["git", "branch"],
+                    "metadata": {"repo_path": str(repo)},
+                }
+            )
+
+        if status:
+            changed_files = [line.strip() for line in status.splitlines() if line.strip()]
+            if changed_files:
+                preview = "；".join(changed_files[:8])
+                events.append(
+                    {
+                        "source": "git_status",
+                        "timestamp": now,
+                        "app_name": "git",
+                        "window_title": repo.name,
+                        "content": f"Git 工作区变更：{preview}",
+                        "project": repo.name,
+                        "tags": ["git", "status"],
+                        "metadata": {
+                            "repo_path": str(repo),
+                            "changed_files": changed_files[:30],
+                        },
+                    }
+                )
+
+        if diff_stat:
+            lines = [line.strip() for line in diff_stat.splitlines() if line.strip()]
+            if lines:
+                preview = "；".join(lines[:6])
+                events.append(
+                    {
+                        "source": "git_diff",
+                        "timestamp": now,
+                        "app_name": "git",
+                        "window_title": repo.name,
+                        "content": f"Git diff 摘要：{preview}",
+                        "project": repo.name,
+                        "tags": ["git", "diff"],
+                        "metadata": {
+                            "repo_path": str(repo),
+                            "diff_stat_preview": lines[:20],
+                        },
+                    }
+                )
+
+        return events
 
     def _collect_shell_events(self, options: SnapshotOptions) -> list[dict]:
         cutoff = datetime.now() - timedelta(hours=options.since_hours)
@@ -241,8 +306,41 @@ class SystemSnapshotCollector:
                 "metadata": {"shell": shell_name},
             }
         if shell_name == "bash":
-            return None
+            command = line.strip()
+            if not command:
+                return None
+            try:
+                executed_at = datetime.fromtimestamp(Path(self._home / ".bash_history").stat().st_mtime)
+            except Exception:
+                executed_at = datetime.now()
+            if executed_at < cutoff:
+                return None
+            return {
+                "source": "shell_history",
+                "timestamp": executed_at.isoformat(timespec="seconds"),
+                "app_name": shell_name,
+                "window_title": command[:60],
+                "content": f"终端命令：{command}",
+                "tags": ["shell", shell_name],
+                "sensitivity": "high",
+                "metadata": {"shell": shell_name, "timestamp_precision": "file_mtime"},
+            }
         return None
+
+    @staticmethod
+    def _run_git(repo: Path, args: list[str]) -> str:
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(repo), *args],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except Exception:
+            return ""
+        if result.returncode != 0:
+            return ""
+        return result.stdout.strip()
 
     @staticmethod
     def _chrome_time_to_datetime(value: int) -> datetime:
