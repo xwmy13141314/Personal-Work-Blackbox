@@ -37,6 +37,7 @@
   - Safari history
   - foreground application snapshot
   - clipboard snapshot
+- Added macOS Calendar import and permission check commands
 
 ### Changed
 
