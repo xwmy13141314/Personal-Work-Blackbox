@@ -14,6 +14,7 @@ from personal_recorder.repositories.event_repository import EventRepository
 from personal_recorder.reports.generator import ReportGenerator
 from personal_recorder.services.blackbox_importer import BlackboxImporter
 from personal_recorder.services.inbox_watcher import InboxWatcher
+from personal_recorder.services.launchagent import LaunchAgentManager, LaunchAgentOptions
 from personal_recorder.services.macos_watcher import MacOSWatchOptions, MacOSWatcher
 from personal_recorder.services.pipeline import ProcessingPipeline
 
@@ -98,6 +99,20 @@ def build_parser() -> argparse.ArgumentParser:
     watch_macos.add_argument("--hours", type=int, default=24)
     watch_macos.add_argument("--max-events-per-source", type=int, default=30)
 
+    install_macos_agent = subparsers.add_parser("install-macos-agent")
+    install_macos_agent.add_argument("--label", default="com.personal-recorder.watch-macos")
+    install_macos_agent.add_argument("--poll-interval", type=float, default=5.0)
+    install_macos_agent.add_argument("--browser-refresh-interval", type=int, default=300)
+    install_macos_agent.add_argument("--calendar-refresh-interval", type=int, default=900)
+    install_macos_agent.add_argument("--hours", type=int, default=24)
+    install_macos_agent.add_argument("--max-events-per-source", type=int, default=30)
+
+    uninstall_macos_agent = subparsers.add_parser("uninstall-macos-agent")
+    uninstall_macos_agent.add_argument("--label", default="com.personal-recorder.watch-macos")
+
+    macos_agent_status = subparsers.add_parser("macos-agent-status")
+    macos_agent_status.add_argument("--label", default="com.personal-recorder.watch-macos")
+
     return parser
 
 
@@ -115,6 +130,7 @@ def main() -> None:
     file_drop = FileDropCollector(settings.inbox_dir)
     snapshot_collector = SystemSnapshotCollector()
     macos_watcher = MacOSWatcher(pipeline)
+    launchagent_manager = LaunchAgentManager(settings.root_dir)
     blackbox_importer = BlackboxImporter(pipeline)
     runtime_bridge = None
     watcher = InboxWatcher(
@@ -288,6 +304,29 @@ def main() -> None:
         )
         print("Watching macOS activity. Press Ctrl+C to stop.")
         macos_watcher.serve_forever(options)
+        return
+
+    if args.command == "install-macos-agent":
+        options = LaunchAgentOptions(
+            label=args.label,
+            poll_interval=args.poll_interval,
+            browser_refresh_interval=args.browser_refresh_interval,
+            calendar_refresh_interval=args.calendar_refresh_interval,
+            since_hours=args.hours,
+            max_events_per_source=args.max_events_per_source,
+        )
+        plist_path = launchagent_manager.install(options)
+        print(f"Installed macOS launch agent: {plist_path}")
+        return
+
+    if args.command == "uninstall-macos-agent":
+        plist_path = launchagent_manager.uninstall(args.label)
+        print(f"Uninstalled macOS launch agent: {plist_path}")
+        return
+
+    if args.command == "macos-agent-status":
+        status = launchagent_manager.print_status(args.label)
+        print(status or "No status returned")
         return
 
 
