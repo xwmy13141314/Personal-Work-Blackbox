@@ -209,6 +209,8 @@ src/
 
 ## 更新日志
 
+详见 `CHANGELOG.md`。
+
 ### v3.0 (2026-06-07) — Personal Recorder 升级模块接入
 
 新增：
