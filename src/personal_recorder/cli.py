@@ -17,6 +17,7 @@ from personal_recorder.services.inbox_watcher import InboxWatcher
 from personal_recorder.services.launchagent import LaunchAgentManager, LaunchAgentOptions
 from personal_recorder.services.macos_watcher import MacOSWatchOptions, MacOSWatcher
 from personal_recorder.services.pipeline import ProcessingPipeline
+from personal_recorder.services.state_store import StateStore
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -96,6 +97,7 @@ def build_parser() -> argparse.ArgumentParser:
     watch_macos.add_argument("--poll-interval", type=float, default=5.0)
     watch_macos.add_argument("--browser-refresh-interval", type=int, default=300)
     watch_macos.add_argument("--calendar-refresh-interval", type=int, default=900)
+    watch_macos.add_argument("--terminal-refresh-interval", type=int, default=3)
     watch_macos.add_argument("--hours", type=int, default=24)
     watch_macos.add_argument("--max-events-per-source", type=int, default=30)
 
@@ -129,7 +131,8 @@ def main() -> None:
     collector = ManualCollector()
     file_drop = FileDropCollector(settings.inbox_dir)
     snapshot_collector = SystemSnapshotCollector()
-    macos_watcher = MacOSWatcher(pipeline)
+    state_store = StateStore(settings.state_path)
+    macos_watcher = MacOSWatcher(pipeline, state_store)
     launchagent_manager = LaunchAgentManager(settings.root_dir)
     blackbox_importer = BlackboxImporter(pipeline)
     runtime_bridge = None
@@ -299,6 +302,7 @@ def main() -> None:
             poll_interval=args.poll_interval,
             browser_refresh_interval=args.browser_refresh_interval,
             calendar_refresh_interval=args.calendar_refresh_interval,
+            terminal_refresh_interval=args.terminal_refresh_interval,
             since_hours=args.hours,
             max_events_per_source=args.max_events_per_source,
         )
