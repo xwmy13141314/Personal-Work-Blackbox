@@ -7,6 +7,25 @@
 - 原始 `Blackbox` 主应用：Windows 端窗口、键盘、剪贴板采集，生成日报、周报、月报
 - 新增 `Personal Recorder` 模块：统一事件模型、历史数据迁移、实时 inbox 接入、重要事项提取、待办提取、日历导出、隐私分层存储
 
+## Highlights
+
+- 保留原始 Windows Blackbox GUI 工作流
+- 新增 `src/personal_recorder` 事件化记录模块
+- 支持从原 Blackbox SQLite 迁移历史数据
+- 支持 inbox 实时接入更多来源
+- 支持日报、周报、`.ics` 导出
+- 支持脱敏文本与原始文本分层存储
+
+## 你该怎么用
+
+如果你要继续用原 Blackbox：
+
+- 运行 `python -m src.main --gui`
+
+如果你要用升级版个人记录器：
+
+- 运行 `PYTHONPATH=src python3 -m personal_recorder ...`
+
 ## 当前结构
 
 ### 1. Blackbox 主应用
@@ -210,6 +229,7 @@ src/
 ## 更新日志
 
 详见 `CHANGELOG.md`。
+发布摘要见 `RELEASE_NOTES_v3.0.0.md`。
 
 ### v3.0 (2026-06-07) — Personal Recorder 升级模块接入
 
