@@ -1,3 +1,25 @@
+<<<<<<< HEAD
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "personal-work-blackbox"
+version = "0.3.0"
+description = "轻量化个人工作日志自动化采集、AI 摘要与个人记录器工具集"
+requires-python = ">=3.11"
+readme = "README.md"
+
+[project.scripts]
+personal-recorder = "personal_recorder.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+=======
 [project]
 name = "personal-work-blackbox"
 version = "0.1.0"
@@ -5,6 +27,7 @@ description = "轻量化个人工作日志自动化采集与 AI 摘要工具"
 requires-python = ">=3.11"
 readme = "README.md"
 
+>>>>>>> origin/main
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
