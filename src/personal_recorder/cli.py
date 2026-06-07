@@ -6,6 +6,7 @@ from pathlib import Path
 from personal_recorder.bridges.blackbox_runtime import BlackboxRuntimeBridge
 from personal_recorder.collectors.file_drop import FileDropCollector
 from personal_recorder.collectors.manual import ManualCollector
+from personal_recorder.collectors.system_snapshot import SnapshotOptions, SystemSnapshotCollector
 from personal_recorder.config.settings import Settings
 from personal_recorder.exporters.ics_exporter import ICSExporter
 from personal_recorder.repositories.database import Database
@@ -74,6 +75,15 @@ def build_parser() -> argparse.ArgumentParser:
     emit_blackbox_text.add_argument("--app-name", default="")
     emit_blackbox_text.add_argument("--window-title", default="")
 
+    collect_snapshot = subparsers.add_parser("collect-snapshot")
+    collect_snapshot.add_argument("--hours", type=int, default=24)
+    collect_snapshot.add_argument("--max-events-per-source", type=int, default=100)
+    collect_snapshot.add_argument("--roots", default="")
+    collect_snapshot.add_argument("--disable-git", action="store_true")
+    collect_snapshot.add_argument("--disable-shell", action="store_true")
+    collect_snapshot.add_argument("--disable-files", action="store_true")
+    collect_snapshot.add_argument("--disable-browser", action="store_true")
+
     return parser
 
 
@@ -89,6 +99,7 @@ def main() -> None:
     exporter = ICSExporter(repository)
     collector = ManualCollector()
     file_drop = FileDropCollector(settings.inbox_dir)
+    snapshot_collector = SystemSnapshotCollector()
     blackbox_importer = BlackboxImporter(pipeline)
     runtime_bridge = None
     watcher = InboxWatcher(
@@ -209,8 +220,40 @@ def main() -> None:
         print(f"Blackbox text event written to inbox: {output}")
         return
 
+    if args.command == "collect-snapshot":
+        roots = _parse_roots(args.roots)
+        if not roots:
+            roots = [
+                settings.root_dir,
+                Path.home() / "Desktop",
+                Path.home() / "Documents",
+                Path.home() / "Downloads",
+            ]
+        options = SnapshotOptions(
+            roots=roots,
+            since_hours=args.hours,
+            max_events_per_source=args.max_events_per_source,
+        )
+        events = snapshot_collector.collect(
+            options=options,
+            include_git=not args.disable_git,
+            include_shell=not args.disable_shell,
+            include_files=not args.disable_files,
+            include_browser=not args.disable_browser,
+        )
+        for raw_event in events:
+            pipeline.ingest(raw_event)
+        print(f"Collected {len(events)} event(s) from local snapshot sources")
+        return
+
 
 def _parse_tags(raw: str) -> list[str]:
     if not raw:
         return []
     return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _parse_roots(raw: str) -> list[Path]:
+    if not raw:
+        return []
+    return [Path(item.strip()).expanduser() for item in raw.split(",") if item.strip()]
