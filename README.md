@@ -131,6 +131,9 @@ PYTHONPATH=src python3 -m personal_recorder collect-snapshot \
 当前新增了第一批本地快照采集源：
 
 - `git`
+- `git_branch`
+- `git_status`
+- `git_diff`
 - `shell_history`
 - `filesystem_recent`
 - `browser_history`
