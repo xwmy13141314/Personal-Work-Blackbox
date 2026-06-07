@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from personal_recorder.collectors.macos_snapshot import MacOSSnapshotCollector
+
 
 @dataclass
 class SnapshotOptions:
@@ -20,6 +22,7 @@ class SnapshotOptions:
 class SystemSnapshotCollector:
     def __init__(self) -> None:
         self._home = Path.home()
+        self._macos = MacOSSnapshotCollector()
 
     def collect(
         self,
@@ -38,6 +41,9 @@ class SystemSnapshotCollector:
             events.extend(self._collect_recent_file_events(options))
         if include_browser:
             events.extend(self._collect_browser_events(options))
+            events.extend(self._collect_macos_browser_events(options))
+        events.extend(self._collect_macos_foreground_events())
+        events.extend(self._collect_macos_clipboard_events())
         events.sort(key=lambda item: item["timestamp"])
         return events
 
@@ -262,6 +268,24 @@ class SystemSnapshotCollector:
         events.sort(key=lambda item: item["timestamp"])
         return events[: options.max_events_per_source]
 
+    def _collect_macos_browser_events(self, options: SnapshotOptions) -> list[dict]:
+        if not self._is_macos():
+            return []
+        return self._macos.collect_safari_history(
+            since_hours=options.since_hours,
+            max_events=options.max_events_per_source,
+        )
+
+    def _collect_macos_foreground_events(self) -> list[dict]:
+        if not self._is_macos():
+            return []
+        return self._macos.collect_foreground_app_snapshot()
+
+    def _collect_macos_clipboard_events(self) -> list[dict]:
+        if not self._is_macos():
+            return []
+        return self._macos.collect_clipboard_snapshot()
+
     def _discover_git_repos(self, roots: list[Path], limit: int) -> list[Path]:
         repos: list[Path] = []
         seen: set[Path] = set()
@@ -357,3 +381,7 @@ class SystemSnapshotCollector:
             except Exception:
                 continue
         return path.parent.name if path.parent.name else None
+
+    @staticmethod
+    def _is_macos() -> bool:
+        return subprocess.run(["uname"], capture_output=True, text=True).stdout.strip() == "Darwin"
