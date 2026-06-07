@@ -108,6 +108,46 @@ class MacOSSnapshotCollector:
             }
         ]
 
+    def history_files(self) -> list[tuple[str, Path]]:
+        return [
+            ("zsh", self._home / ".zsh_history"),
+            ("bash", self._home / ".bash_history"),
+        ]
+
+    def parse_history_line(self, shell_name: str, line: str) -> dict | None:
+        if shell_name == "zsh" and line.startswith(": "):
+            try:
+                prefix, command = line.split(";", 1)
+                timestamp_part = prefix.split(":")[1].strip()
+                executed_at = datetime.fromtimestamp(int(timestamp_part))
+            except Exception:
+                return None
+            return {
+                "source": "shell_history_live",
+                "timestamp": executed_at.isoformat(timespec="seconds"),
+                "app_name": shell_name,
+                "window_title": command[:60],
+                "content": f"终端命令：{command}",
+                "tags": ["shell", shell_name, "live"],
+                "sensitivity": "high",
+                "metadata": {"shell": shell_name},
+            }
+        if shell_name == "bash":
+            command = line.strip()
+            if not command:
+                return None
+            return {
+                "source": "shell_history_live",
+                "timestamp": datetime.now().isoformat(timespec="seconds"),
+                "app_name": shell_name,
+                "window_title": command[:60],
+                "content": f"终端命令：{command}",
+                "tags": ["shell", shell_name, "live"],
+                "sensitivity": "high",
+                "metadata": {"shell": shell_name, "timestamp_precision": "observer_now"},
+            }
+        return None
+
     def collect_calendar_events(self, since_hours: int, max_events: int) -> list[dict]:
         script = f'''
         set horizonDate to (current date) - ({since_hours} * hours)
