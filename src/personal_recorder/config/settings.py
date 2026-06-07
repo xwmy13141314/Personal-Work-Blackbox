@@ -14,6 +14,7 @@ class Settings:
     inbox_dir: Path
     archive_dir: Path
     failed_dir: Path
+    state_path: Path
 
     @classmethod
     def load(cls, root_dir: Path | None = None) -> "Settings":
@@ -24,6 +25,7 @@ class Settings:
         inbox_dir = data_dir / "inbox"
         archive_dir = inbox_dir / "processed"
         failed_dir = inbox_dir / "failed"
+        state_path = data_dir / "watch-state.json"
         db_path = data_dir / "personal_recorder.db"
         settings = cls(
             root_dir=root,
@@ -34,6 +36,7 @@ class Settings:
             inbox_dir=inbox_dir,
             archive_dir=archive_dir,
             failed_dir=failed_dir,
+            state_path=state_path,
         )
         settings.ensure_dirs()
         return settings
