@@ -18,6 +18,7 @@
 - 支持 macOS Calendar 事件导入与权限检查
 - 支持 macOS 轻量常驻 watch 模式
 - 支持 macOS launchd 后台常驻安装/卸载
+- 支持 watch 状态持久化与终端命令准实时采集
 - 支持日报、周报、`.ics` 导出
 - 支持脱敏文本与原始文本分层存储
 
@@ -181,7 +182,8 @@ PYTHONPATH=src python3 -m personal_recorder check-macos-permissions
 PYTHONPATH=src python3 -m personal_recorder watch-macos \
   --poll-interval 5 \
   --browser-refresh-interval 300 \
-  --calendar-refresh-interval 900
+  --calendar-refresh-interval 900 \
+  --terminal-refresh-interval 3
 ```
 
 这个模式当前会持续采集：
@@ -190,6 +192,11 @@ PYTHONPATH=src python3 -m personal_recorder watch-macos \
 - 剪贴板变化
 - Safari 历史的低频刷新
 - Calendar 事件的低频刷新
+- Shell 历史新增命令的准实时入库
+
+并且会把基础去重状态保存到：
+
+- `data/watch-state.json`
 
 安装为 launchd 后台任务：
 
