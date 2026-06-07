@@ -27,6 +27,11 @@
   - redacted content
   - derived summary
   - storage tier tagging
+- Added first-wave local snapshot collectors:
+  - Git activity
+  - shell history
+  - recent file modifications
+  - Chrome-family browser history
 
 ### Changed
 
