@@ -13,6 +13,7 @@ class LaunchAgentOptions:
     poll_interval: float = 5.0
     browser_refresh_interval: int = 300
     calendar_refresh_interval: int = 900
+    terminal_refresh_interval: int = 3
     since_hours: int = 24
     max_events_per_source: int = 30
 
@@ -40,6 +41,8 @@ class LaunchAgentManager:
             str(options.browser_refresh_interval),
             "--calendar-refresh-interval",
             str(options.calendar_refresh_interval),
+            "--terminal-refresh-interval",
+            str(options.terminal_refresh_interval),
             "--hours",
             str(options.since_hours),
             "--max-events-per-source",
