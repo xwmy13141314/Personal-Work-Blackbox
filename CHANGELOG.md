@@ -29,6 +29,7 @@
   - storage tier tagging
 - Added first-wave local snapshot collectors:
   - Git activity
+  - Git branch, status, and diff snapshots
   - shell history
   - recent file modifications
   - Chrome-family browser history
