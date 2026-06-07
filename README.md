@@ -13,6 +13,7 @@
 - 新增 `src/personal_recorder` 事件化记录模块
 - 支持从原 Blackbox SQLite 迁移历史数据
 - 支持 inbox 实时接入更多来源
+- 支持 Git、Shell、最近文件、浏览器历史快照采集
 - 支持日报、周报、`.ics` 导出
 - 支持脱敏文本与原始文本分层存储
 
@@ -119,6 +120,34 @@ PYTHONPATH=src python3 -m personal_recorder push-event \
   --tags important,todo
 
 PYTHONPATH=src python3 -m personal_recorder watch-inbox --once
+
+PYTHONPATH=src python3 -m personal_recorder collect-snapshot \
+  --hours 24 \
+  --max-events-per-source 100
+```
+
+### 新增本地采集源
+
+当前新增了第一批本地快照采集源：
+
+- `git`
+- `shell_history`
+- `filesystem_recent`
+- `browser_history`
+
+统一采集命令：
+
+```bash
+PYTHONPATH=src python3 -m personal_recorder collect-snapshot
+```
+
+可选参数：
+
+```bash
+PYTHONPATH=src python3 -m personal_recorder collect-snapshot \
+  --hours 48 \
+  --max-events-per-source 200 \
+  --roots ~/Desktop,~/Documents,/path/to/projects
 ```
 
 ### Windows 实时桥接
