@@ -14,6 +14,7 @@ from personal_recorder.repositories.event_repository import EventRepository
 from personal_recorder.reports.generator import ReportGenerator
 from personal_recorder.services.blackbox_importer import BlackboxImporter
 from personal_recorder.services.inbox_watcher import InboxWatcher
+from personal_recorder.services.macos_watcher import MacOSWatchOptions, MacOSWatcher
 from personal_recorder.services.pipeline import ProcessingPipeline
 
 
@@ -90,6 +91,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     check_macos_permissions = subparsers.add_parser("check-macos-permissions")
 
+    watch_macos = subparsers.add_parser("watch-macos")
+    watch_macos.add_argument("--poll-interval", type=float, default=5.0)
+    watch_macos.add_argument("--browser-refresh-interval", type=int, default=300)
+    watch_macos.add_argument("--calendar-refresh-interval", type=int, default=900)
+    watch_macos.add_argument("--hours", type=int, default=24)
+    watch_macos.add_argument("--max-events-per-source", type=int, default=30)
+
     return parser
 
 
@@ -106,6 +114,7 @@ def main() -> None:
     collector = ManualCollector()
     file_drop = FileDropCollector(settings.inbox_dir)
     snapshot_collector = SystemSnapshotCollector()
+    macos_watcher = MacOSWatcher(pipeline)
     blackbox_importer = BlackboxImporter(pipeline)
     runtime_bridge = None
     watcher = InboxWatcher(
@@ -267,6 +276,18 @@ def main() -> None:
             return
         for check in checks:
             print(f"[{check['status']}] {check['permission']}: {check['detail']}")
+        return
+
+    if args.command == "watch-macos":
+        options = MacOSWatchOptions(
+            poll_interval=args.poll_interval,
+            browser_refresh_interval=args.browser_refresh_interval,
+            calendar_refresh_interval=args.calendar_refresh_interval,
+            since_hours=args.hours,
+            max_events_per_source=args.max_events_per_source,
+        )
+        print("Watching macOS activity. Press Ctrl+C to stop.")
+        macos_watcher.serve_forever(options)
         return
 
 
