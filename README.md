@@ -16,6 +16,7 @@
 - 支持 Git、Shell、最近文件、浏览器历史快照采集
 - 支持 macOS Safari / 前台应用 / 剪贴板快照采集
 - 支持 macOS Calendar 事件导入与权限检查
+- 支持 macOS 轻量常驻 watch 模式
 - 支持日报、周报、`.ics` 导出
 - 支持脱敏文本与原始文本分层存储
 
@@ -172,6 +173,22 @@ PYTHONPATH=src python3 -m personal_recorder collect-calendar --hours 72 --max-ev
 ```bash
 PYTHONPATH=src python3 -m personal_recorder check-macos-permissions
 ```
+
+启动轻量常驻模式：
+
+```bash
+PYTHONPATH=src python3 -m personal_recorder watch-macos \
+  --poll-interval 5 \
+  --browser-refresh-interval 300 \
+  --calendar-refresh-interval 900
+```
+
+这个模式当前会持续采集：
+
+- 前台应用变化
+- 剪贴板变化
+- Safari 历史的低频刷新
+- Calendar 事件的低频刷新
 
 ### Windows 实时桥接
 
