@@ -17,6 +17,7 @@
 - 支持 macOS Safari / 前台应用 / 剪贴板快照采集
 - 支持 macOS Calendar 事件导入与权限检查
 - 支持 macOS 轻量常驻 watch 模式
+- 支持 macOS launchd 后台常驻安装/卸载
 - 支持日报、周报、`.ics` 导出
 - 支持脱敏文本与原始文本分层存储
 
@@ -189,6 +190,27 @@ PYTHONPATH=src python3 -m personal_recorder watch-macos \
 - 剪贴板变化
 - Safari 历史的低频刷新
 - Calendar 事件的低频刷新
+
+安装为 launchd 后台任务：
+
+```bash
+PYTHONPATH=src python3 -m personal_recorder install-macos-agent \
+  --poll-interval 5 \
+  --browser-refresh-interval 300 \
+  --calendar-refresh-interval 900
+```
+
+查看状态：
+
+```bash
+PYTHONPATH=src python3 -m personal_recorder macos-agent-status
+```
+
+卸载：
+
+```bash
+PYTHONPATH=src python3 -m personal_recorder uninstall-macos-agent
+```
 
 ### Windows 实时桥接
 
