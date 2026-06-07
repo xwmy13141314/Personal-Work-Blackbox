@@ -42,6 +42,7 @@ class SystemSnapshotCollector:
         if include_browser:
             events.extend(self._collect_browser_events(options))
             events.extend(self._collect_macos_browser_events(options))
+            events.extend(self._collect_macos_calendar_events(options))
         events.extend(self._collect_macos_foreground_events())
         events.extend(self._collect_macos_clipboard_events())
         events.sort(key=lambda item: item["timestamp"])
@@ -276,6 +277,14 @@ class SystemSnapshotCollector:
             max_events=options.max_events_per_source,
         )
 
+    def _collect_macos_calendar_events(self, options: SnapshotOptions) -> list[dict]:
+        if not self._is_macos():
+            return []
+        return self._macos.collect_calendar_events(
+            since_hours=options.since_hours,
+            max_events=options.max_events_per_source,
+        )
+
     def _collect_macos_foreground_events(self) -> list[dict]:
         if not self._is_macos():
             return []
@@ -385,3 +394,8 @@ class SystemSnapshotCollector:
     @staticmethod
     def _is_macos() -> bool:
         return subprocess.run(["uname"], capture_output=True, text=True).stdout.strip() == "Darwin"
+
+    def check_macos_permissions(self) -> list[dict]:
+        if not self._is_macos():
+            return []
+        return self._macos.check_permissions()
