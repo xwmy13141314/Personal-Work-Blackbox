@@ -40,6 +40,7 @@
 - Added macOS Calendar import and permission check commands
 - Added lightweight `watch-macos` background watch mode
 - Added launchd install / uninstall / status commands for macOS watch mode
+- Added persistent watch state storage and near-realtime shell history ingestion
 
 ### Changed
 
