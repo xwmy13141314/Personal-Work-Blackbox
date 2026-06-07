@@ -33,6 +33,10 @@
   - shell history
   - recent file modifications
   - Chrome-family browser history
+- Added first-wave macOS snapshot collectors:
+  - Safari history
+  - foreground application snapshot
+  - clipboard snapshot
 
 ### Changed
 
