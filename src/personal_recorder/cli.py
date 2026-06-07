@@ -84,6 +84,12 @@ def build_parser() -> argparse.ArgumentParser:
     collect_snapshot.add_argument("--disable-files", action="store_true")
     collect_snapshot.add_argument("--disable-browser", action="store_true")
 
+    collect_calendar = subparsers.add_parser("collect-calendar")
+    collect_calendar.add_argument("--hours", type=int, default=72)
+    collect_calendar.add_argument("--max-events", type=int, default=100)
+
+    check_macos_permissions = subparsers.add_parser("check-macos-permissions")
+
     return parser
 
 
@@ -244,6 +250,23 @@ def main() -> None:
         for raw_event in events:
             pipeline.ingest(raw_event)
         print(f"Collected {len(events)} event(s) from local snapshot sources")
+        return
+
+    if args.command == "collect-calendar":
+        options = SnapshotOptions(roots=[], since_hours=args.hours, max_events_per_source=args.max_events)
+        events = snapshot_collector._collect_macos_calendar_events(options)
+        for raw_event in events:
+            pipeline.ingest(raw_event)
+        print(f"Collected {len(events)} calendar event(s)")
+        return
+
+    if args.command == "check-macos-permissions":
+        checks = snapshot_collector.check_macos_permissions()
+        if not checks:
+            print("macOS permission checks are only available on macOS")
+            return
+        for check in checks:
+            print(f"[{check['status']}] {check['permission']}: {check['detail']}")
         return
 
 
