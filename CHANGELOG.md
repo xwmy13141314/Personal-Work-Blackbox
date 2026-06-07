@@ -39,6 +39,7 @@
   - clipboard snapshot
 - Added macOS Calendar import and permission check commands
 - Added lightweight `watch-macos` background watch mode
+- Added launchd install / uninstall / status commands for macOS watch mode
 
 ### Changed
 
