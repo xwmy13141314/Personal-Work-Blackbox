@@ -9,18 +9,28 @@
 import sys
 from pathlib import Path
 
+# pywebview + pythonnet(.NET 后端) 依赖收集
+from PyInstaller.utils.hooks import collect_submodules, collect_data_files, collect_dynamic_libs
+
 block_cipher = None
 
 # 项目根目录
 ROOT = Path('.')
 
+# 收集 pywebview 及 Windows .NET 后端（pythonnet/clr_loader）的子模块、数据、动态库
+webview_submodules = collect_submodules('webview')
+webview_datas = collect_data_files('webview')
+dotnet_submodules = collect_submodules('pythonnet') + collect_submodules('clr_loader')
+dotnet_libs = collect_dynamic_libs('clr_loader') + collect_dynamic_libs('pythonnet')
+
 a = Analysis(
     ['src/main.py'],
     pathex=[str(ROOT)],
-    binaries=[],
+    binaries=dotnet_libs,
     datas=[
         ('config/config.example.yaml', 'config'),
-    ],
+        ('web_frontend', 'web_frontend'),
+    ] + webview_datas,
     hiddenimports=[
         'pynput',
         'pynput.keyboard',
@@ -59,9 +69,14 @@ a = Analysis(
         'src.ui.system_tray',
         'src.ui.hotkey_manager',
         'src.ui.notification',
+        'src.ui.web_ui',
+        'src.ui.web_api',
         'src.config',
         'src.config.settings',
         'src.config.defaults',
+    ] + webview_submodules + dotnet_submodules + [
+        'bottle',
+        'proxy_tools',
     ],
     hookspath=[],
     hooksconfig={},
@@ -91,7 +106,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='PersonalWorkBlackbox',
+    name='WorkTrace',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -104,5 +119,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,
+    icon='app.ico',
 )

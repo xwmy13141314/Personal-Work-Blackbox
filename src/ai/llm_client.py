@@ -15,6 +15,7 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 import httpx
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -222,6 +223,54 @@ class GLMProvider(LLMProvider):
         return _check_tcp_reachable("open.bigmodel.cn")
 
 
+class OpenAICompatibleProvider(LLMProvider):
+    """通用 OpenAI 兼容接口提供商
+
+    适用于任何兼容 OpenAI Chat Completions 协议的服务：
+    智谱GLM / DeepSeek / 阿里通义(DashScope) / Kimi(Moonshot) / OpenAI / 自定义。
+    """
+
+    def __init__(self, name: str, config: dict):
+        self._name = name
+        self._api_key = config.get("api_key", "")
+        self._model = config.get("model", "")
+        self._base_url = config.get("base_url", "").rstrip("/")
+        try:
+            self._host = urlparse(self._base_url).hostname or ""
+        except Exception:
+            self._host = ""
+
+    async def complete(self, messages: list[dict[str, str]]) -> str:
+        if not self._api_key:
+            raise ValueError(f"{self._name}: API Key 未配置")
+        if not self._base_url:
+            raise ValueError(f"{self._name}: Base URL 未配置")
+        url = f"{self._base_url}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": self._model,
+            "messages": messages,
+            "temperature": 0.3,
+        }
+        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"]
+
+    def is_available(self) -> bool:
+        return bool(self._api_key) and bool(self._base_url)
+
+    def test_connectivity(self) -> tuple[bool, str]:
+        if not self._api_key:
+            return False, f"{self._name}: API Key 未配置"
+        if not self._host:
+            return False, f"{self._name}: Base URL 无效"
+        return _check_tcp_reachable(self._host)
+
+
 # ==================== 统一客户端 ====================
 
 PROVIDER_REGISTRY: dict[str, type[LLMProvider]] = {
@@ -263,10 +312,17 @@ class LLMClient:
         self._max_retries = config.get("max_retries", MAX_RETRIES)
         self._retry_delays = config.get("retry_delays", RETRY_DELAYS)
 
-        # 初始化所有已配置的提供商
-        for name, provider_cls in PROVIDER_REGISTRY.items():
-            if name in config and isinstance(config[name], dict):
-                self._providers[name] = provider_cls(config[name])
+        # 初始化所有已配置的提供商：
+        # - ollama 走专用类
+        # - 其余一律按 OpenAI 兼容协议加载（GLM/DeepSeek/阿里/Kimi/OpenAI/自定义）
+        _skip = {"default_provider", "auto_report_time", "max_retries", "retry_delays"}
+        for name, prov_cfg in config.items():
+            if name in _skip or not isinstance(prov_cfg, dict):
+                continue
+            if name == "ollama":
+                self._providers[name] = OllamaProvider(prov_cfg)
+            else:
+                self._providers[name] = OpenAICompatibleProvider(name, prov_cfg)
 
     async def complete(
         self,

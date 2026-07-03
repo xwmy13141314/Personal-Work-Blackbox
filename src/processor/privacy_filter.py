@@ -127,6 +127,11 @@ class PrivacyFilter:
         self._privacy_mode_until = time.time() + minutes * 60
         logger.info("隐私模式已激活，持续 %d 分钟", minutes)
 
+    def deactivate_privacy_mode(self):
+        """关闭隐私模式（立即恢复记录）"""
+        self._privacy_mode_until = 0.0
+        logger.info("隐私模式已关闭")
+
     @property
     def is_privacy_mode(self) -> bool:
         """是否处于隐私模式"""

@@ -270,8 +270,11 @@ class BlackboxEngine:
             self._keyboard_hook.start()
 
     def toggle_privacy_mode(self, duration_minutes: float | None = None):
-        """切换隐私模式"""
-        self._privacy_filter.activate_privacy_mode(duration_minutes)
+        """切换隐私模式：已开启则关闭，未开启则激活指定时长"""
+        if self._privacy_filter.is_privacy_mode:
+            self._privacy_filter.deactivate_privacy_mode()
+        else:
+            self._privacy_filter.activate_privacy_mode(duration_minutes)
 
     @property
     def is_privacy_mode(self) -> bool:
@@ -334,9 +337,10 @@ class BlackboxEngine:
             logger.warning("数据库未连接，无法生成日报")
             return None
 
-        # 先提交当前缓冲区（仅在运行中有意义，停止后为空操作）
+        # 先提交当前缓冲区并持久化进行中的会话（仅在运行中有意义，停止后为空操作）
         if self._running:
             self._input_buffer.force_commit()
+            self._flush_active_session()
 
         try:
             report = self._report_generator.generate_sync(date)
@@ -346,6 +350,22 @@ class BlackboxEngine:
         except Exception:
             logger.exception("日报生成失败")
             return None
+
+    def _flush_active_session(self):
+        """生成报告前强制持久化当前会话，并立即开新会话接续录制
+
+        进行中的会话内容只暂存于内存，生成日报时查 DB 会缺失当前内容。
+        flush 结束当前会话并持久化，随后基于当前窗口立即开新会话，用户无感。
+        暂停状态下 current_session 为空，直接返回，不受影响。
+        """
+        sm = self._session_manager
+        if not sm.current_session:
+            return
+        sm.flush()
+        if self._window_tracker:
+            ctx = self._window_tracker.current_context
+            if ctx.is_valid:
+                sm.resume(ctx)
 
     def get_daily_report(self, date: str | None = None):
         """查询已有的日报"""
@@ -697,6 +717,14 @@ def main():
 
 
 if __name__ == "__main__":
+    # PyInstaller windowed(console=False)模式下 stdout/stderr 为 None，
+    # 会导致依赖 print/stderr 的库（pywebview/pythonnet）运行时崩溃，
+    # 重定向到 devnull 规避（仅 windowed exe 受影响，源码版有控制台不受影响）
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")
+
     # frozen exe 模式下，将 CWD 切换到项目根目录（exe 的上级目录）
     # 这样开发和打包版共用同一个 data/ 目录
     if getattr(sys, 'frozen', False):
@@ -704,10 +732,11 @@ if __name__ == "__main__":
 
     if "--no-tray" in sys.argv:
         main()
-    elif "--gui" in sys.argv or "--ui" in sys.argv:
+    elif "--gui-tk" in sys.argv:
+        # tkinter 回退入口（保留旧 GUI）
         from src.ui.gui import run_gui
         run_gui()
     else:
-        # 默认 GUI 模式
-        from src.ui.gui import run_gui
-        run_gui()
+        # 默认 Web UI（pywebview）；--gui / --ui 也走 Web
+        from src.ui.web_ui import run_web
+        run_web()

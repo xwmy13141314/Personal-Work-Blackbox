@@ -342,6 +342,16 @@ class Database:
             )
             return [row[0] for row in cur.fetchall()]
 
+    def query_reported_dates(self, limit: int = 90) -> list[str]:
+        """查询已生成日报的日期列表（最近的优先，用于日历标记）"""
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT report_date FROM daily_reports "
+                "ORDER BY report_date DESC LIMIT ?",
+                (limit,),
+            )
+            return [row[0] for row in cur.fetchall()]
+
     def query_all_text_for_date(self, date: str) -> list[dict]:
         """查询某天所有文本片段（用于 AI 摘要生成）"""
         with self._cursor() as cur:
@@ -361,6 +371,50 @@ class Database:
                 "timestamp": row[0], "text": row[1], "source": row[2],
                 "is_filtered": bool(row[3]), "process_name": row[4],
                 "window_title": row[5],
+            }
+            for row in rows
+        ]
+
+    def query_session_by_id(self, session_id: int) -> SessionRecord | None:
+        """按主键查单个会话"""
+        with self._cursor() as cur:
+            cur.execute(
+                """SELECT id, start_time, end_time, process_name, window_title,
+                          idle_seconds, active_seconds, is_filtered
+                   FROM sessions WHERE id = ?""",
+                (session_id,),
+            )
+            row = cur.fetchone()
+        if not row:
+            return None
+        return SessionRecord(
+            id=row[0], start_time=row[1], end_time=row[2], process_name=row[3],
+            window_title=row[4], idle_seconds=row[5], active_seconds=row[6],
+            is_filtered=bool(row[7]),
+        )
+
+    def search_text(self, keyword: str, limit: int = 50) -> list[dict]:
+        """全文搜索文本片段（LIKE 匹配，返回截断片段用于预览）"""
+        kw = f"%{keyword}%"
+        with self._cursor() as cur:
+            cur.execute(
+                """SELECT ts.id, ts.session_id, ts.timestamp, ts.raw_text, ts.source,
+                          ts.is_filtered, s.process_name, s.window_title,
+                          DATE(ts.timestamp) as date
+                   FROM text_segments ts
+                   LEFT JOIN sessions s ON ts.session_id = s.id
+                   WHERE ts.raw_text LIKE ?
+                   ORDER BY ts.timestamp DESC
+                   LIMIT ?""",
+                (kw, limit),
+            )
+            rows = cur.fetchall()
+        return [
+            {
+                "id": row[0], "session_id": row[1], "timestamp": row[2],
+                "text": (row[3] or "")[:120], "source": row[4],
+                "is_filtered": bool(row[5]), "process_name": row[6] or "",
+                "window_title": row[7] or "", "date": row[8],
             }
             for row in rows
         ]

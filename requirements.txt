@@ -14,6 +14,7 @@ httpx>=0.27.0              # 异步 HTTP 客户端（调用 Ollama / DeepSeek AP
 # ===== 交互层 =====
 pystray>=0.19.5            # 系统托盘图标
 Pillow>=10.0.0             # 图标生成（pystray 依赖）
+pywebview>=5.0             # 嵌入式 WebView（Web GUI，替代 tkinter）
 
 # ===== 配置与工具 =====
 pyyaml>=6.0                # YAML 配置文件解析

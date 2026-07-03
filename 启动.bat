@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul 2>&1
-title Personal Work Blackbox
+title 职迹 WorkTrace
 
 :: 切换到脚本所在目录
 cd /d "%~dp0"
@@ -23,7 +23,7 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 :: 启动 GUI
-echo 正在启动 Personal Work Blackbox...
+echo 正在启动 职迹 WorkTrace...
 python -m src.main --gui
 if %ERRORLEVEL% NEQ 0 (
     echo.
