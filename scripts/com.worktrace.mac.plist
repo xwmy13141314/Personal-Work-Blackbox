@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  WorkTrace LaunchAgent — 登录时自动启动
+  install.sh 会把 __APP_PATH__ 替换为实际 .app 路径（默认 ~/Applications/WorkTrace.app）
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.worktrace.mac</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/open</string>
+        <string>-W</string>
+        <string>__APP_PATH__</string>
+    </array>
+
+    <!-- 登录后启动 -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- 退出后不自动重启（如需崩溃自重启，改为 true） -->
+    <key>KeepAlive</key>
+    <false/>
+
+    <key>LaunchOnlyOnce</key>
+    <true/>
+</dict>
+</plist>

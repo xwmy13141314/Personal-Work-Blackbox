@@ -1,0 +1,27 @@
+# Personal Work Blackbox - 依赖清单
+# Python 3.11+
+
+# ===== 采集层 =====
+pynput>=1.7.6              # 键盘/鼠标监听（跨平台：Windows WH_KEYBOARD_LL / macOS CGEventTap）
+pywin32>=306; sys_platform == "win32"        # Win32 API（窗口追踪、剪贴板、空闲检测）—— Windows 专用
+pyobjc-framework-Cocoa; sys_platform == "darwin"   # macOS NSWorkspace / NSPasteboard
+pyobjc-framework-Quartz; sys_platform == "darwin"  # macOS CGWindowList（窗口标题采集）
+
+# ===== 存储层 =====
+# SQLite 为 Python 内置，无需额外安装
+
+# ===== AI 层 =====
+httpx>=0.27.0              # 异步 HTTP 客户端（调用 OpenAI 兼容 API）
+
+# ===== 交互层 =====
+pystray>=0.19.5            # 系统托盘图标（跨平台，macOS 为菜单栏图标）
+Pillow>=10.0.0             # 图标生成（pystray 依赖）
+pywebview>=5.0             # 嵌入式 WebView（跨平台，macOS 用 WebKit）
+
+# ===== 配置与工具 =====
+pyyaml>=6.0                # YAML 配置文件解析
+pydantic>=2.5.0            # 数据模型验证
+
+# ===== 开发依赖 =====
+pytest>=8.0.0              # 单元测试
+pytest-asyncio>=0.23.0     # 异步测试支持

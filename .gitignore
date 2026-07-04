@@ -1,0 +1,27 @@
+# 用户数据(隐私,绝不提交/打包/分发)
+config/config.yaml
+data/
+blackbox.log
+*.log
+
+# Python 缓存 / 虚拟环境
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# 打包 / 构建产物
+dist/
+build/
+build_icon/
+*.spec.bak
+
+# 前端构建产物(npm run build:desktop 可重建)
+web_frontend/
+界面优化/**/node_modules/
+
+# release 压缩包
+WorkTrace-mac-*.zip
+
+# 系统
+.DS_Store
