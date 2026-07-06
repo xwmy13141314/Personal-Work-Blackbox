@@ -273,14 +273,8 @@ class OpenAICompatibleProvider(LLMProvider):
 
 # ==================== 统一客户端 ====================
 
-PROVIDER_REGISTRY: dict[str, type[LLMProvider]] = {
-    "ollama": OllamaProvider,
-    "glm": GLMProvider,
-    "deepseek": DeepSeekProvider,
-    "openai": OpenAIProvider,
-}
-
 # 降级顺序：本地优先 → 国内云端 → 海外云端
+# 动态从配置中收集所有提供商名称，确保自定义提供商也能参与降级
 FALLBACK_ORDER = ["ollama", "glm", "deepseek", "openai"]
 
 
@@ -354,10 +348,18 @@ class LLMClient:
             except Exception as exc:
                 logger.warning("默认提供商 %s 重试耗尽后仍失败: %s", default, exc)
 
-        # 降级到其他可用提供商
-        for name in FALLBACK_ORDER:
-            if name == default or name not in self._providers:
+        # 降级到其他可用提供商（FALLBACK_ORDER + 配置中的自定义提供商）
+        tried = {default}
+        fallback_chain = list(FALLBACK_ORDER)
+        # 追加配置中存在但不在 FALLBACK_ORDER 中的自定义提供商
+        for name in self._providers:
+            if name not in fallback_chain:
+                fallback_chain.append(name)
+
+        for name in fallback_chain:
+            if name in tried or name not in self._providers:
                 continue
+            tried.add(name)
             try:
                 result = await self._call_with_retry(name, messages)
                 logger.info("降级使用提供商: %s", name)

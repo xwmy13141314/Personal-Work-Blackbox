@@ -55,9 +55,16 @@ def run_web():
     )
     # 窗口关闭时优雅释放引擎（含数据库）
     def _on_closing():
-        api.shutdown()
-        # pythonnet/.NET CLR 线程会阻止进程正常退出，强制退出确保关闭无残留
-        os._exit(0)
+        try:
+            api.shutdown()
+        except Exception:
+            logger.exception("shutdown 异常")
+        finally:
+            # 确保数据库 flush/close 完成后再退出
+            import time
+            time.sleep(0.5)
+            # pythonnet/.NET CLR 线程会阻止进程正常退出，强制退出确保关闭无残留
+            os._exit(0)
 
     window.events.closing += _on_closing
     logger.info("启动 Web UI（pywebview）")

@@ -26,6 +26,8 @@ DEFAULTS = {
         "markdown_export_dir": "./data/logs",
         "retention_days": 90,
         "auto_archive": True,
+        "encryption_enabled": False,  # 是否启用数据库加密（需安装 sqlcipher3）
+        "encryption_key_env": "WORKTRACE_DB_KEY",  # 加密密钥的环境变量名
     },
     "ai": {
         "default_provider": "glm",
@@ -59,5 +61,10 @@ DEFAULTS = {
     "notification": {
         "on_report_generated": True,
         "on_privacy_mode": True,
+    },
+    "rest_api": {
+        "enabled": False,        # 默认关闭，用户需手动开启
+        "port": 19527,           # 默认端口
+        "host": "127.0.0.1",     # 仅本地访问
     },
 }

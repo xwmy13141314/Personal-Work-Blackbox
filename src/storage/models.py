@@ -42,6 +42,8 @@ class SessionRecord:
     idle_seconds: float = 0.0
     active_seconds: float = 0.0
     is_filtered: bool = False
+    category: str = "其他"
+    icon: str = "📦"
 
 
 @dataclass

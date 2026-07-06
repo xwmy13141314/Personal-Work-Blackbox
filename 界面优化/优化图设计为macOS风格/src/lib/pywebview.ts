@@ -50,6 +50,25 @@ export interface AppStats {
   total_active: number
 }
 
+export interface CategoryStatItem {
+  category: string
+  icon: string
+  session_count: number
+  active_seconds: number
+  idle_seconds: number
+}
+
+export interface CategoryStats {
+  range: { start: string; end: string; type: string }
+  items: CategoryStatItem[]
+  total_active: number
+}
+
+export interface CategoryItem {
+  category: string
+  icon: string
+}
+
 export interface SessionItem {
   id: number
   start_time: string
@@ -59,6 +78,7 @@ export interface SessionItem {
   active_seconds: number
   idle_seconds: number
   is_filtered: boolean
+  segment_count?: number
 }
 
 export interface SessionDetail {
@@ -109,6 +129,7 @@ export interface BlackboxApi {
   get_api_config(): Promise<ApiConfig>
   open_report_file(report_type: string, date: string): Promise<{ ok: boolean; path?: string; error?: string }>
   open_data_dir(): Promise<{ ok: boolean }>
+  export_data: (format: string, data_type: string, date?: string) => Promise<{ ok: boolean; path?: string; filename?: string; error?: string }>
   save_api_config(provider: string, base_url: string, model: string, api_key: string): Promise<{ ok: boolean; restart_needed?: boolean; backup?: string; error?: string }>
   test_api_config(provider: string, base_url: string, model: string, api_key: string): Promise<{ ok: boolean; detail?: string; error?: string }>
   // 数据浏览
@@ -116,6 +137,29 @@ export interface BlackboxApi {
   get_sessions(date: string): Promise<SessionItem[]>
   get_session_detail(session_id: number): Promise<SessionDetail | null>
   search_text(keyword: string, limit?: number): Promise<{ keyword: string; results: SearchResult[] }>
+  // 分类统计
+  get_category_stats(range_type: string, date: string): Promise<CategoryStats>
+  backfill_categories(): Promise<{ ok: boolean; updated?: number; error?: string }>
+  get_categories(): Promise<CategoryItem[]>
+  // 隐私告知同意状态
+  get_consent_status(): Promise<{ consented: boolean; window_only: boolean; timestamp: string }>
+  set_consent(window_only: boolean): Promise<{ ok: boolean; error?: string }>
+  // 专注模式
+  start_focus_session: (goal: string, duration_minutes: number) => Promise<{ ok: boolean; session?: any; error?: string }>
+  stop_focus_session: () => Promise<{ ok: boolean; session?: any }>
+  get_focus_session: () => Promise<any | null>
+  get_daily_efficiency: () => Promise<{
+    work_seconds: number
+    distraction_seconds: number
+    total_seconds: number
+    work_ratio: number
+    distraction_ratio: number
+    daily_goal_minutes: number
+    goal_progress: number
+    goal_achieved: boolean
+    current_category: string
+  }>
+  set_daily_goal: (minutes: number) => Promise<{ ok: boolean; daily_goal_minutes?: number }>
 }
 
 declare global {
@@ -190,6 +234,7 @@ const mockApi: BlackboxApi = {
   }),
   open_report_file: async () => ({ ok: false, error: "mock" }),
   open_data_dir: async () => ({ ok: true }),
+  export_data: async () => ({ ok: true, path: "mock/export.csv", filename: "export.csv" }),
   save_api_config: async () => ({ ok: true, restart_needed: true }),
   test_api_config: async () => ({ ok: true, detail: "mock 连接成功" }),
   get_app_stats: async () => ({
@@ -208,4 +253,58 @@ const mockApi: BlackboxApi = {
     segments: [{ timestamp: "2026-07-02T09:05:00", raw_text: "示例输入内容（mock）", source: "keyboard", is_filtered: false, char_count: 12 }],
   }),
   search_text: async (keyword) => ({ keyword, results: [] }),
+  get_category_stats: async () => ({
+    range: { start: "2026-07-02", end: "2026-07-02", type: "today" },
+    total_active: 8700,
+    items: [
+      { category: "开发工具", icon: "💻", session_count: 12, active_seconds: 5200, idle_seconds: 300 },
+      { category: "浏览器", icon: "🌐", session_count: 8, active_seconds: 2400, idle_seconds: 200 },
+    ],
+  }),
+  backfill_categories: async () => ({ ok: true, updated: 0 }),
+  get_categories: async () => [
+    { category: "开发工具", icon: "💻" },
+    { category: "浏览器", icon: "🌐" },
+    { category: "通讯社交", icon: "💬" },
+    { category: "办公文档", icon: "📄" },
+    { category: "设计创作", icon: "🎨" },
+    { category: "娱乐休闲", icon: "🎮" },
+    { category: "系统工具", icon: "⚙️" },
+    { category: "数据库", icon: "🗄️" },
+    { category: "AI 工具", icon: "🤖" },
+    { category: "其他", icon: "📦" },
+  ],
+  get_consent_status: async () => ({ consented: false, window_only: false, timestamp: "" }),
+  set_consent: async () => ({ ok: true }),
+  // 专注模式 mock
+  start_focus_session: async (goal: string, duration_minutes: number) => ({
+    ok: true,
+    session: {
+      goal,
+      duration_minutes,
+      start_time: new Date().toISOString(),
+      end_time: new Date(Date.now() + duration_minutes * 60000).toISOString(),
+      remaining_minutes: duration_minutes,
+      elapsed_minutes: 0,
+      distraction_seconds: 0,
+      work_seconds: 0,
+      distraction_ratio: 0,
+      reminders_sent: 0,
+      is_active: true,
+    },
+  }),
+  stop_focus_session: async () => ({ ok: true, session: null }),
+  get_focus_session: async () => null,
+  get_daily_efficiency: async () => ({
+    work_seconds: 14400,
+    distraction_seconds: 1800,
+    total_seconds: 16200,
+    work_ratio: 0.889,
+    distraction_ratio: 0.111,
+    daily_goal_minutes: 480,
+    goal_progress: 0.5,
+    goal_achieved: false,
+    current_category: "开发工具",
+  }),
+  set_daily_goal: async (minutes: number) => ({ ok: true, daily_goal_minutes: minutes }),
 }

@@ -39,6 +39,36 @@
   --sidebar-accent-foreground: #0071e3;
   --sidebar-border: rgba(0, 0, 0, 0.08);
   --sidebar-ring: rgba(0, 113, 227, 0.4);
+
+  /* ==================== WorkTrace 自定义主题变量 ==================== */
+  /* 文本颜色 */
+  --wt-text: #1d1d1f;
+  --wt-text-secondary: #3a3a3c;
+  --wt-text-tertiary: #6e6e73;
+  --wt-text-muted: #86868b;
+  --wt-text-faint: #a1a1a6;
+
+  /* 强调色 */
+  --wt-accent: #0071e3;
+  --wt-accent-light: #34A0FF;
+  --wt-accent-bg: rgba(0, 113, 227, 0.15);
+
+  /* 语义色 */
+  --wt-success: #34C759;
+  --wt-danger: #FF3B30;
+  --wt-warning: #FF9F0A;
+
+  /* 背景色 */
+  --wt-bg: #f5f5f7;
+  --wt-bg-sidebar: #f0f0f5;
+  --wt-bg-surface: rgba(255, 255, 255, 0.7);
+  --wt-bg-sidebar-surface: rgba(236, 236, 240, 0.9);
+
+  /* 边框 */
+  --wt-border: rgba(0, 0, 0, 0.07);
+  --wt-border-light: rgba(0, 0, 0, 0.1);
+  --wt-border-faint: rgba(0, 0, 0, 0.06);
+  --wt-border-input: rgba(0, 0, 0, 0.1);
 }
 
 .dark {

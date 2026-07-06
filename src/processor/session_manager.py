@@ -1,8 +1,13 @@
-"""会话管理器 — 按应用切换将活动分组为会话"""
+"""会话管理器 — 按应用切换将活动分组为会话
+
+线程安全：内部使用 threading.Lock 保护会话状态，
+确保窗口线程与剪贴板线程并发访问时不会产生 TOCTOU 错误。
+"""
 
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Callable
@@ -24,6 +29,8 @@ class Session:
     clipboard_items: list = field(default_factory=list)
     idle_seconds: float = 0.0
     is_filtered: bool = False
+    category: str = "其他"
+    icon: str = "📦"
 
     @property
     def duration(self) -> float:
@@ -53,7 +60,7 @@ class TextSegment:
 
 
 class SessionManager:
-    """会话管理器
+    """会话管理器（线程安全）
 
     职责：
     1. 维护当前活跃会话
@@ -62,14 +69,21 @@ class SessionManager:
     4. 会话结束时通知存储层持久化
     """
 
-    def __init__(self, on_session_end: Callable[[Session], None]):
+    # 单会话最大片段数，防止超长会话内存无限增长
+    MAX_SEGMENTS_PER_SESSION = 500
+
+    def __init__(self, on_session_end: Callable[[Session], None], classifier=None):
         """
         Args:
             on_session_end: 会话结束回调（用于存储层持久化）
+            classifier: 应用分类器实例（可选，未提供时自动创建默认实例）
         """
         self._on_session_end = on_session_end
         self._current_session: Session | None = None
         self._is_paused = False
+        self._lock = threading.Lock()
+        # 应用分类器：未传入时延迟创建默认实例
+        self._classifier = classifier
 
     @property
     def current_session(self) -> Session | None:
@@ -80,77 +94,110 @@ class SessionManager:
         return self._is_paused
 
     def pause(self):
-        """暂停采集"""
-        self._is_paused = True
-        self._end_current_session("pause")
-        logger.info("会话采集已暂停")
+        """暂停采集（线程安全）"""
+        with self._lock:
+            self._is_paused = True
+            self._end_current_session("pause")
+            logger.info("会话采集已暂停")
 
     def resume(self, ctx: WindowContext):
-        """恢复采集"""
-        self._is_paused = False
-        self._start_new_session(ctx)
-        logger.info("会话采集已恢复")
+        """恢复采集（线程安全）"""
+        with self._lock:
+            self._is_paused = False
+            self._start_new_session(ctx)
+            logger.info("会话采集已恢复")
 
     def on_window_switch(self, from_ctx: WindowContext, to_ctx: WindowContext, duration: float):
-        """处理窗口切换事件"""
-        if self._is_paused:
-            return
+        """处理窗口切换事件（线程安全）"""
+        with self._lock:
+            if self._is_paused:
+                return
 
-        # 结束旧会话
-        self._end_current_session("window_switch")
+            # 结束旧会话
+            self._end_current_session("window_switch")
 
-        # 创建新会话
-        self._start_new_session(to_ctx)
+            # 创建新会话
+            self._start_new_session(to_ctx)
 
     def on_text_committed(self, text: str, source: str = "keyboard", is_filtered: bool = False):
-        """处理文本提交事件（来自 InputBuffer）"""
-        if self._is_paused or not self._current_session:
-            return
+        """处理文本提交事件（来自 InputBuffer，线程安全）"""
+        with self._lock:
+            if self._is_paused or not self._current_session:
+                return
 
-        segment = TextSegment(
-            timestamp=time.time(),
-            text=text,
-            source=source,
-            is_filtered=is_filtered,
-            char_count=len(text),
-        )
-        self._current_session.text_segments.append(segment)
+            # 片段数超限时强制 flush，防止内存无限增长
+            if len(self._current_session.text_segments) >= self.MAX_SEGMENTS_PER_SESSION:
+                prev_process = self._current_session.process_name
+                prev_title = self._current_session.window_title
+                self._end_current_session("segment_limit")
+                # 用相同窗口上下文开新会话
+                from src.collector.window_tracker import WindowContext
+                self._start_new_session(WindowContext(
+                    process_name=prev_process,
+                    window_title=prev_title,
+                ))
+
+            if not self._current_session:
+                return
+
+            segment = TextSegment(
+                timestamp=time.time(),
+                text=text,
+                source=source,
+                is_filtered=is_filtered,
+                char_count=len(text),
+            )
+            self._current_session.text_segments.append(segment)
 
     def on_clipboard_change(self, content: str, is_filtered: bool = False):
-        """处理剪贴板变化事件"""
-        if self._is_paused or not self._current_session:
-            return
+        """处理剪贴板变化事件（线程安全）"""
+        with self._lock:
+            if self._is_paused or not self._current_session:
+                return
 
-        segment = TextSegment(
-            timestamp=time.time(),
-            text=content,
-            source="clipboard",
-            is_filtered=is_filtered,
-            char_count=len(content),
-        )
-        self._current_session.clipboard_items.append(segment)
+            segment = TextSegment(
+                timestamp=time.time(),
+                text=content,
+                source="clipboard",
+                is_filtered=is_filtered,
+                char_count=len(content),
+            )
+            self._current_session.clipboard_items.append(segment)
 
     def on_idle_start(self, idle_seconds: float):
-        """进入空闲"""
-        if self._current_session:
-            self._current_session.idle_seconds += idle_seconds
+        """进入空闲（线程安全）"""
+        with self._lock:
+            if self._current_session:
+                self._current_session.idle_seconds += idle_seconds
 
     def on_idle_end(self, idle_duration: float):
         """空闲结束"""
         pass  # 空闲时长已在 on_idle_start 中累加
 
     def flush(self):
-        """强制结束当前会话（程序退出时调用）"""
-        self._end_current_session("flush")
+        """强制结束当前会话（程序退出时调用，线程安全）"""
+        with self._lock:
+            self._end_current_session("flush")
 
     def _start_new_session(self, ctx: WindowContext):
         """创建新会话"""
+        # 对应用进行自动分类
+        category, icon = self._classify(ctx.process_name, ctx.window_title)
         self._current_session = Session(
             process_name=ctx.process_name,
             window_title=ctx.window_title,
             start_time=time.time(),
+            category=category,
+            icon=icon,
         )
-        logger.debug("新会话: %s - %s", ctx.process_name, ctx.window_title[:50])
+        logger.debug("新会话: %s - %s [%s]", ctx.process_name, ctx.window_title[:50], category)
+
+    def _classify(self, process_name: str, window_title: str) -> tuple[str, str]:
+        """分类应用（延迟初始化分类器）"""
+        if self._classifier is None:
+            from src.processor.app_classifier import AppClassifier
+            self._classifier = AppClassifier()
+        return self._classifier.classify(process_name, window_title)
 
     def _end_current_session(self, reason: str):
         """结束当前会话并回调持久化"""

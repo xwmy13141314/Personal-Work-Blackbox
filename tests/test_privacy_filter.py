@@ -62,10 +62,10 @@ class TestContentFilter:
     """Level 2: 内容级过滤测试"""
 
     def test_six_digit_numbers(self, default_filter):
-        """测试连续6位数字过滤"""
-        text, filtered = default_filter.filter_text("验证码 123456 已发送")
+        """测试连续8位+数字过滤（v3.2 阈值从6位提高到8位，减少误杀）"""
+        text, filtered = default_filter.filter_text("验证码 12345678 已发送")
         assert filtered is True
-        assert "123456" not in text
+        assert "12345678" not in text
         assert "[FILTERED_NUM]" in text
 
     def test_phone_number(self, default_filter):

@@ -64,6 +64,7 @@ from src.collector.idle_detector import IdleDetector, IdleState
 from src.collector.keyboard_hook import KeyEvent, KeyboardHook
 from src.collector.window_tracker import WindowContext, WindowTracker
 from src.config.settings import Settings
+from src.processor.app_classifier import AppClassifier
 from src.processor.input_buffer import InputBuffer
 from src.processor.privacy_filter import PrivacyFilter
 from src.processor.session_manager import Session, SessionManager
@@ -135,6 +136,7 @@ class BlackboxEngine:
         self._db = Database(
             db_path=self._settings.db_path,
             journal_mode=self._settings.performance["journal_mode"],
+            encryption_key=self._settings.db_encryption_key,
         )
         self._db.initialize()
 
@@ -144,7 +146,11 @@ class BlackboxEngine:
         )
 
         self._privacy_filter = PrivacyFilter(self._settings.privacy)
-        self._session_manager = SessionManager(on_session_end=self._on_session_end)
+        self._classifier = AppClassifier()
+        self._session_manager = SessionManager(
+            on_session_end=self._on_session_end,
+            classifier=self._classifier,
+        )
         self._input_buffer = InputBuffer(
             on_commit=self._on_text_commit,
             max_length=self._settings.performance["input_buffer_max_length"],
@@ -164,6 +170,40 @@ class BlackboxEngine:
         # AI 摘要层
         self._report_generator = None
         self._init_ai_layer()
+
+        # REST API 服务器
+        self._rest_api = None
+        self._init_rest_api()
+
+        # 专注模式
+        self._focus_mode = None
+        self._init_focus_mode()
+
+    def _init_focus_mode(self):
+        """初始化专注模式"""
+        try:
+            from src.processor.focus_mode import FocusModeManager
+            from src.ui.notification import send_toast
+
+            def on_remind(title, message):
+                send_toast(title, message)
+
+            self._focus_mode = FocusModeManager(on_remind=on_remind)
+            self._focus_mode.start_monitor()
+        except Exception:
+            logger.exception("专注模式初始化失败")
+
+    def _init_rest_api(self):
+        """初始化 REST API 服务器"""
+        try:
+            rest_config = self._settings.config.get("rest_api", {})
+            if rest_config.get("enabled", False):
+                from src.ui.rest_api import RestAPIServer
+                port = rest_config.get("port", 19527)
+                self._rest_api = RestAPIServer(self, port=port)
+                self._rest_api.start()
+        except Exception:
+            logger.exception("REST API 初始化失败")
 
     def start(self):
         """启动采集引擎"""
@@ -212,6 +252,10 @@ class BlackboxEngine:
         # 启动超时检查循环
         self._timeout_thread()
 
+        # 启动 REST API（若已在 __init__ 中启动则跳过）
+        if self._rest_api and not self._rest_api.is_running:
+            self._rest_api.start()
+
     def stop(self):
         """停止采集引擎（保留数据库连接，支持后续报告生成）"""
         logger.info("正在停止 Personal Work Blackbox...")
@@ -240,6 +284,14 @@ class BlackboxEngine:
         except Exception:
             logger.exception("导出日志异常")
 
+        # 停止 REST API
+        if self._rest_api:
+            self._rest_api.stop()
+
+        # 停止专注模式监控
+        if self._focus_mode:
+            self._focus_mode.stop_monitor()
+
         # 注意：不关闭数据库，保持连接活跃以支持报告查看/生成
         logger.info("=== Personal Work Blackbox 已停止 ===")
 
@@ -247,6 +299,8 @@ class BlackboxEngine:
         """完全关闭引擎（含数据库），仅在应用退出时调用"""
         if self._running:
             self.stop()
+        if self._rest_api:
+            self._rest_api.stop()
         self._db.close()
         logger.info("引擎已完全关闭（数据库连接已释放）")
 
@@ -428,6 +482,10 @@ class BlackboxEngine:
         # 通知会话管理器
         self._session_manager.on_window_switch(from_ctx, to_ctx, duration)
 
+        # 通知专注模式
+        if self._focus_mode:
+            self._focus_mode.on_window_change(to_ctx.process_name, to_ctx.window_title)
+
         # 记录窗口事件
         event = WindowEventRecord(
             timestamp=datetime.now().isoformat(),
@@ -479,6 +537,12 @@ class BlackboxEngine:
         if self._privacy_filter.is_privacy_mode:
             return
 
+        # 检查当前窗口是否在黑名单（与键盘事件保持一致）
+        if self._window_tracker:
+            ctx = self._window_tracker.current_context
+            if self._privacy_filter.should_pause_recording(ctx.process_name, ctx.window_title):
+                return
+
         # 隐私过滤
         filtered_content, was_filtered = self._privacy_filter.filter_clipboard(record.content)
 
@@ -529,8 +593,12 @@ class BlackboxEngine:
     # ==================== 会话持久化 ====================
 
     def _on_session_end(self, session: Session):
-        """会话结束回调：将 Session 持久化到数据库"""
-        # 插入会话记录
+        """会话结束回调：将 Session 原子性持久化到数据库
+
+        使用 insert_session_with_segments 单事务写入，
+        避免旧版逐条 insert 导致的"有会话无片段"不一致问题。
+        """
+        # 构建会话记录
         session_record = SessionRecord(
             start_time=datetime.fromtimestamp(session.start_time).isoformat(),
             end_time=datetime.fromtimestamp(session.end_time).isoformat() if session.end_time else None,
@@ -539,22 +607,28 @@ class BlackboxEngine:
             idle_seconds=session.idle_seconds,
             active_seconds=session.active_seconds,
             is_filtered=session.is_filtered,
+            category=session.category,
+            icon=session.icon,
         )
-        session_id = self._db.insert_session(session_record)
 
-        # 插入文本片段
-        for seg in session.text_segments:
-            seg_record = TextSegmentRecord(
-                session_id=session_id,
+        # 构建文本片段记录列表
+        seg_records = [
+            TextSegmentRecord(
+                session_id=0,  # 占位，实际 ID 由批量插入设置
                 timestamp=datetime.fromtimestamp(seg.timestamp).isoformat(),
                 raw_text=seg.text,
                 source=seg.source,
                 is_filtered=seg.is_filtered,
                 char_count=seg.char_count,
             )
-            self._db.insert_text_segment(seg_record)
+            for seg in session.text_segments
+        ]
 
-        # 剪贴板记录已在 _on_clipboard_change 中直接入库
+        # 原子性批量插入（单事务）
+        try:
+            self._db.insert_session_with_segments(session_record, seg_records)
+        except Exception:
+            logger.exception("会话批量持久化异常")
 
     # ==================== 超时检查 ====================
 

@@ -16,7 +16,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_APP_VERSION = "2.2-web"
+_APP_VERSION = "4.0.0"
 
 
 class BlackboxAPI:
@@ -66,35 +66,55 @@ class BlackboxAPI:
     # ==================== 录制控制（同步） ====================
 
     def start_recording(self) -> dict:
-        engine = self._engine
-        engine.start()
-        self._is_paused = False
-        self._recording_started_at = datetime.now().isoformat()
-        return {"ok": True, "started_at": self._recording_started_at}
+        try:
+            engine = self._engine
+            engine.start()
+            self._is_paused = False
+            self._recording_started_at = datetime.now().isoformat()
+            return {"ok": True, "started_at": self._recording_started_at}
+        except Exception as e:
+            logger.exception("启动录制失败")
+            return {"ok": False, "error": str(e)}
 
     def stop_recording(self) -> dict:
-        self._engine.stop()
-        self._is_paused = False
-        self._recording_started_at = None
-        return {"ok": True}
+        try:
+            self._engine.stop()
+            self._is_paused = False
+            self._recording_started_at = None
+            return {"ok": True}
+        except Exception as e:
+            logger.exception("停止录制失败")
+            return {"ok": False, "error": str(e)}
 
     def pause_recording(self) -> dict:
-        if not self._engine._running:
-            return {"ok": False, "error": "未在录制"}
-        self._engine.pause()
-        self._is_paused = True
-        return {"ok": True, "is_paused": True}
+        try:
+            if not self._engine._running:
+                return {"ok": False, "error": "未在录制"}
+            self._engine.pause()
+            self._is_paused = True
+            return {"ok": True, "is_paused": True}
+        except Exception as e:
+            logger.exception("暂停录制失败")
+            return {"ok": False, "error": str(e)}
 
     def resume_recording(self) -> dict:
-        if not self._is_paused:
-            return {"ok": False, "error": "未暂停"}
-        self._engine.resume()
-        self._is_paused = False
-        return {"ok": True, "is_paused": False}
+        try:
+            if not self._is_paused:
+                return {"ok": False, "error": "未暂停"}
+            self._engine.resume()
+            self._is_paused = False
+            return {"ok": True, "is_paused": False}
+        except Exception as e:
+            logger.exception("恢复录制失败")
+            return {"ok": False, "error": str(e)}
 
     def toggle_privacy(self) -> dict:
-        self._engine.toggle_privacy_mode()
-        return {"ok": True, "is_privacy": self._engine.is_privacy_mode}
+        try:
+            self._engine.toggle_privacy_mode()
+            return {"ok": True, "is_privacy": self._engine.is_privacy_mode}
+        except Exception as e:
+            logger.exception("切换隐私模式失败")
+            return {"ok": False, "error": str(e)}
 
     # ==================== 报告查看（同步） ====================
 
@@ -177,7 +197,13 @@ class BlackboxAPI:
     def get_task_status(self, task_id: str) -> dict | None:
         with self._lock:
             task = self._tasks.get(task_id)
-            return dict(task) if task else None
+            if not task:
+                return None
+            result = dict(task)
+            # 已完成/失败的任务，读取后自动清理（防止内存单调增长）
+            if task["status"] in ("done", "failed"):
+                del self._tasks[task_id]
+            return result
 
     def _gen_worker(self, task_id: str, report_type: str, date: str):
         """报告生成工作线程（复刻 gui.py 的 _gen 逻辑）"""
@@ -285,21 +311,24 @@ class BlackboxAPI:
             return fallback
 
     def get_sessions(self, date: str) -> list:
-        """某日会话列表"""
+        """某日会话列表（含片段计数，便于前端区分有无文本输入）"""
         engine = self._engine
         if not engine._db.is_connected:
             return []
         try:
             rows = engine._db.query_sessions(date=date, limit=500)
-            return [
-                {
+            result = []
+            for r in rows:
+                # 查询该会话的文本片段数
+                seg_count = engine._db.count_text_segments(r.id)
+                result.append({
                     "id": r.id, "start_time": r.start_time, "end_time": r.end_time,
                     "process_name": r.process_name, "window_title": r.window_title,
                     "active_seconds": r.active_seconds, "idle_seconds": r.idle_seconds,
                     "is_filtered": r.is_filtered,
-                }
-                for r in rows
-            ]
+                    "segment_count": seg_count,
+                })
+            return result
         except Exception:
             logger.exception("查询会话列表失败")
             return []
@@ -345,6 +374,52 @@ class BlackboxAPI:
         except Exception:
             logger.exception("全文搜索失败")
             return {"keyword": keyword, "results": []}
+
+    # ==================== 分类统计 ====================
+
+    def get_category_stats(self, range_type: str, date: str) -> dict:
+        """按分类统计使用时长：range_type = today/week/month"""
+        engine = self._engine
+        fallback = {"items": [], "total_active": 0,
+                    "range": {"start": date, "end": date, "type": range_type}}
+        if not engine._db.is_connected:
+            return fallback
+        try:
+            from src.ai.report_generator import _week_range, _month_range
+            if range_type == "week":
+                start, end = _week_range(date)
+            elif range_type == "month":
+                start, end = _month_range(date)
+            else:
+                start = end = date
+            items = engine._db.query_category_stats(start_date=start, end_date=end)
+            total = sum(it.get("active_seconds", 0) for it in items)
+            return {
+                "range": {"start": start, "end": end, "type": range_type},
+                "items": items,
+                "total_active": total,
+            }
+        except Exception:
+            logger.exception("查询分类统计失败")
+            return fallback
+
+    def backfill_categories(self) -> dict:
+        """回填历史会话的分类"""
+        try:
+            engine = self._engine
+            if not engine._db.is_connected:
+                return {"ok": False, "error": "数据库未连接"}
+            updated = engine._db.backfill_categories()
+            return {"ok": True, "updated": updated}
+        except Exception as e:
+            logger.exception("回填分类失败")
+            return {"ok": False, "error": str(e)}
+
+    def get_categories(self) -> list:
+        """获取所有预置分类"""
+        from src.processor.app_classifier import AppClassifier
+        classifier = AppClassifier()
+        return classifier.get_all_categories()
 
     # ==================== API 配置（脱敏） ====================
 
@@ -466,6 +541,144 @@ class BlackboxAPI:
         data_dir.mkdir(parents=True, exist_ok=True)
         os.startfile(str(data_dir.resolve()))
         return {"ok": True}
+
+    def export_data(self, format: str, data_type: str, date: str | None = None) -> dict:
+        """导出数据
+        
+        Args:
+            format: csv / json
+            data_type: sessions / segments
+            date: 指定日期（可选）
+        """
+        try:
+            from src.storage.data_exporter import DataExporter
+            from src.main import get_app_root
+            
+            exporter = DataExporter(self._engine._db)
+            
+            # 导出到 data/exports/ 目录
+            export_dir = get_app_root() / "data" / "exports"
+            export_dir.mkdir(parents=True, exist_ok=True)
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            suffix = f"_{date}" if date else "_all"
+            filename = f"export_{data_type}{suffix}_{timestamp}.{format}"
+            output_path = export_dir / filename
+            
+            if data_type == "sessions":
+                if format == "csv":
+                    path = exporter.export_sessions_csv(date=date, output_path=output_path)
+                elif format == "json":
+                    path = exporter.export_sessions_json(date=date, output_path=output_path)
+                else:
+                    return {"ok": False, "error": f"不支持的格式: {format}"}
+            elif data_type == "segments":
+                if format == "csv":
+                    path = exporter.export_text_segments_csv(date=date, output_path=output_path)
+                elif format == "json":
+                    # segments JSON = sessions JSON 的简化版
+                    path = exporter.export_sessions_json(date=date, output_path=output_path)
+                else:
+                    return {"ok": False, "error": f"不支持的格式: {format}"}
+            else:
+                return {"ok": False, "error": f"不支持的数据类型: {data_type}"}
+            
+            return {"ok": True, "path": str(path), "filename": filename}
+        except Exception as e:
+            logger.exception("导出数据失败")
+            return {"ok": False, "error": str(e)}
+
+    # ==================== 专注模式 ====================
+
+    def start_focus_session(self, goal: str, duration_minutes: int) -> dict:
+        """启动专注会话"""
+        try:
+            engine = self._engine
+            if not engine._focus_mode:
+                return {"ok": False, "error": "专注模式未初始化"}
+            session = engine._focus_mode.start_focus_session(goal, duration_minutes)
+            return {"ok": True, "session": session.to_dict()}
+        except Exception as e:
+            logger.exception("启动专注会话失败")
+            return {"ok": False, "error": str(e)}
+
+    def stop_focus_session(self) -> dict:
+        """停止专注会话"""
+        try:
+            engine = self._engine
+            if not engine._focus_mode:
+                return {"ok": False, "error": "专注模式未初始化"}
+            result = engine._focus_mode.stop_focus_session()
+            return {"ok": True, "session": result}
+        except Exception as e:
+            logger.exception("停止专注会话失败")
+            return {"ok": False, "error": str(e)}
+
+    def get_focus_session(self) -> dict | None:
+        """获取当前专注会话状态"""
+        try:
+            engine = self._engine
+            if not engine._focus_mode:
+                return None
+            return engine._focus_mode.get_focus_session()
+        except Exception:
+            return None
+
+    def get_daily_efficiency(self) -> dict:
+        """获取今日效率统计"""
+        try:
+            engine = self._engine
+            if not engine._focus_mode:
+                return {"work_seconds": 0, "distraction_seconds": 0, "goal_progress": 0}
+            return engine._focus_mode.get_daily_stats()
+        except Exception:
+            return {"work_seconds": 0, "distraction_seconds": 0, "goal_progress": 0}
+
+    def set_daily_goal(self, minutes: int) -> dict:
+        """设置每日工作目标"""
+        try:
+            engine = self._engine
+            if not engine._focus_mode:
+                return {"ok": False, "error": "专注模式未初始化"}
+            engine._focus_mode.set_daily_goal(minutes)
+            return {"ok": True, "daily_goal_minutes": minutes}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    # ==================== 隐私告知同意状态 ====================
+
+    def get_consent_status(self) -> dict:
+        """检查用户是否已同意隐私告知"""
+        import os
+        from src.main import get_app_root
+        consent_file = get_app_root() / "data" / ".consent"
+        if consent_file.exists():
+            try:
+                import json
+                data = json.loads(consent_file.read_text(encoding="utf-8"))
+                return {"consented": True, "window_only": data.get("window_only", False), "timestamp": data.get("timestamp", "")}
+            except Exception:
+                pass
+        return {"consented": False, "window_only": False, "timestamp": ""}
+
+    def set_consent(self, window_only: bool) -> dict:
+        """记录用户同意隐私告知"""
+        import json
+        from datetime import datetime
+        from src.main import get_app_root
+        try:
+            consent_file = get_app_root() / "data" / ".consent"
+            consent_file.parent.mkdir(parents=True, exist_ok=True)
+            data = {
+                "consented": True,
+                "window_only": bool(window_only),
+                "timestamp": datetime.now().isoformat(),
+            }
+            consent_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            return {"ok": True}
+        except Exception as e:
+            logger.exception("保存同意状态失败")
+            return {"ok": False, "error": str(e)}
 
     def shutdown(self) -> None:
         try:

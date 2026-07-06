@@ -1,13 +1,30 @@
-"""SQLite 数据库操作封装"""
+"""SQLite 数据库操作封装
+
+线程安全：内部通过 threading.Lock 保护所有读写操作，
+确保多线程并发访问时 commit/rollback 不会互相干扰。
+"""
 
 from __future__ import annotations
 
 import logging
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Generator
+
+# 尝试导入 sqlcipher3（如果可用）
+try:
+    from pysqlcipher3 import dbapi2 as sqlcipher
+    HAS_SQLCIPHER = True
+except ImportError:
+    try:
+        import sqlcipher3 as sqlcipher
+        HAS_SQLCIPHER = True
+    except ImportError:
+        sqlcipher = None
+        HAS_SQLCIPHER = False
 
 from .models import (
     SessionRecord,
@@ -31,7 +48,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     window_title  TEXT,
     idle_seconds  REAL DEFAULT 0,
     active_seconds REAL DEFAULT 0,
-    is_filtered   INTEGER DEFAULT 0
+    is_filtered   INTEGER DEFAULT 0,
+    category      TEXT DEFAULT '其他',
+    icon          TEXT DEFAULT '📦'
 );
 
 -- 窗口切换事件
@@ -107,25 +126,140 @@ CREATE INDEX IF NOT EXISTS idx_period_reports_type ON period_reports(report_type
 
 
 class Database:
-    """SQLite 数据库管理器"""
+    """SQLite 数据库管理器（线程安全）
 
-    def __init__(self, db_path: str | Path, journal_mode: str = "WAL"):
+    内部使用 threading.Lock 保护所有数据库操作，
+    确保多线程并发访问时事务不会互相干扰。
+    """
+
+    def __init__(self, db_path: str | Path, journal_mode: str = "WAL", encryption_key: str | None = None):
         self._db_path = Path(db_path)
         self._journal_mode = journal_mode
+        self._encryption_key = encryption_key
         self._conn: sqlite3.Connection | None = None
+        self._lock = threading.Lock()
 
     def initialize(self):
-        """初始化数据库（建表）"""
+        """初始化数据库（建表）
+
+        若提供了 encryption_key 且 sqlcipher3 可用，则使用加密连接；
+        否则回退到普通 sqlite3。
+        """
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(
-            str(self._db_path),
-            check_same_thread=False,
-        )
+        if self._encryption_key and HAS_SQLCIPHER:
+            # 使用 SQLCipher 加密连接
+            self._conn = sqlcipher.connect(
+                str(self._db_path),
+                check_same_thread=False,
+            )
+            self._conn.execute(f"PRAGMA key='{self._encryption_key}'")
+        else:
+            # 回退到普通 sqlite3
+            if self._encryption_key and not HAS_SQLCIPHER:
+                logger.warning("已配置加密密钥但 sqlcipher3 未安装，回退到明文 sqlite3")
+            self._conn = sqlite3.connect(
+                str(self._db_path),
+                check_same_thread=False,
+            )
         self._conn.execute(f"PRAGMA journal_mode={self._journal_mode}")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.executescript(SCHEMA_SQL)
+        self._migrate_schema()
         self._conn.commit()
         logger.info("数据库已初始化: %s", self._db_path)
+
+    def _migrate_schema(self):
+        """数据库 schema 迁移（向后兼容）
+
+        为旧版数据库补充新增列，已存在则跳过。
+        """
+        migrations = [
+            ("sessions", "category", "TEXT DEFAULT '其他'"),
+            ("sessions", "icon", "TEXT DEFAULT '📦'"),
+        ]
+        for table, column, col_type in migrations:
+            try:
+                cursor = self._conn.execute(f"PRAGMA table_info({table})")
+                columns = [row[1] for row in cursor.fetchall()]
+                if column not in columns:
+                    self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+                    logger.info("数据库迁移: %s.%s 已添加", table, column)
+            except Exception as e:
+                logger.debug("迁移检查跳过 %s.%s: %s", table, column, e)
+        self._conn.commit()
+
+    def migrate_to_encrypted(self, encryption_key: str) -> bool:
+        """将现有明文数据库迁移到加密数据库
+
+        迁移流程：备份原文件 → 使用 sqlcipher_export 导出到加密副本 → 替换原文件。
+        若数据库已加密或不存在，则直接以加密模式初始化。
+
+        Returns: True 如果迁移成功或已加密，False 如果迁移失败
+        """
+        if not HAS_SQLCIPHER:
+            logger.warning("sqlcipher3 未安装，无法加密数据库")
+            return False
+
+        if not self._db_path.exists():
+            logger.info("数据库文件不存在，无需迁移，将直接创建加密数据库")
+            self._encryption_key = encryption_key
+            self.initialize()
+            return True
+
+        # 先关闭现有连接
+        if self._conn:
+            self._conn.close()
+            self._conn = None
+
+        # 检查是否已经加密（尝试用 key 打开并读取）
+        try:
+            test_conn = sqlcipher.connect(str(self._db_path), check_same_thread=False)
+            test_conn.execute(f"PRAGMA key='{encryption_key}'")
+            test_conn.execute("SELECT count(*) FROM sqlite_master")
+            test_conn.close()
+            logger.info("数据库已加密，无需迁移")
+            self._encryption_key = encryption_key
+            self.initialize()
+            return True
+        except Exception:
+            pass  # 数据库未加密或 key 错误，继续迁移
+
+        # 执行迁移：明文 → 加密
+        backup_path = self._db_path.with_suffix('.db.plain_backup')
+        try:
+            # 1. 备份原文件
+            import shutil
+            shutil.copy2(self._db_path, backup_path)
+
+            # 2. 打开明文数据库（使用 sqlcipher 以支持 ATTACH KEY 和 sqlcipher_export）
+            plain_conn = sqlcipher.connect(str(self._db_path), check_same_thread=False)
+
+            # 3. 创建加密副本路径，清理可能残留的临时文件
+            enc_path = self._db_path.with_suffix('.db.enc')
+            if enc_path.exists():
+                enc_path.unlink()
+
+            # 4. 使用 ATTACH + sqlcipher_export 迁移数据
+            plain_conn.execute(f"ATTACH DATABASE '{enc_path}' AS encrypted KEY '{encryption_key}'")
+            plain_conn.execute("SELECT sqlcipher_export('encrypted')")
+            plain_conn.execute("DETACH DATABASE encrypted")
+            plain_conn.close()
+
+            # 5. 替换原文件
+            self._db_path.unlink()
+            enc_path.rename(self._db_path)
+
+            self._encryption_key = encryption_key
+            self.initialize()
+            logger.info("数据库加密迁移成功，明文备份: %s", backup_path)
+            return True
+        except Exception as e:
+            logger.error("数据库加密迁移失败: %s", e)
+            # 恢复备份
+            if backup_path.exists() and not self._db_path.exists():
+                import shutil
+                shutil.copy2(backup_path, self._db_path)
+            return False
 
     def close(self):
         """关闭数据库连接"""
@@ -141,18 +275,19 @@ class Database:
 
     @contextmanager
     def _cursor(self) -> Generator[sqlite3.Cursor, None, None]:
-        """获取游标的上下文管理器"""
+        """获取游标的上下文管理器（线程安全，加锁保护）"""
         if not self._conn:
             raise RuntimeError("数据库未初始化")
-        cursor = self._conn.cursor()
-        try:
-            yield cursor
-            self._conn.commit()
-        except Exception:
-            self._conn.rollback()
-            raise
-        finally:
-            cursor.close()
+        with self._lock:
+            cursor = self._conn.cursor()
+            try:
+                yield cursor
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+            finally:
+                cursor.close()
 
     # ==================== 写入操作 ====================
 
@@ -161,13 +296,14 @@ class Database:
         with self._cursor() as cur:
             cur.execute(
                 """INSERT INTO sessions (start_time, end_time, process_name, window_title,
-                   idle_seconds, active_seconds, is_filtered)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                   idle_seconds, active_seconds, is_filtered, category, icon)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session.start_time, session.end_time,
                     session.process_name, session.window_title,
                     session.idle_seconds, session.active_seconds,
                     int(session.is_filtered),
+                    session.category, session.icon,
                 ),
             )
             return cur.lastrowid
@@ -185,6 +321,51 @@ class Database:
                     int(segment.is_filtered), segment.char_count,
                 ),
             )
+
+    def insert_session_with_segments(
+        self, session: SessionRecord, segments: list[TextSegmentRecord]
+    ) -> int:
+        """原子性插入会话及其所有文本片段（单事务）
+
+        解决旧版逐条 insert 导致的"有会话无片段"不一致问题。
+        若中途异常，整个事务回滚，不会产生半写入数据。
+        """
+        if not self._conn:
+            raise RuntimeError("数据库未初始化")
+        with self._lock:
+            cursor = self._conn.cursor()
+            try:
+                cursor.execute(
+                    """INSERT INTO sessions (start_time, end_time, process_name, window_title,
+                       idle_seconds, active_seconds, is_filtered, category, icon)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        session.start_time, session.end_time,
+                        session.process_name, session.window_title,
+                        session.idle_seconds, session.active_seconds,
+                        int(session.is_filtered),
+                        session.category, session.icon,
+                    ),
+                )
+                session_id = cursor.lastrowid
+                for seg in segments:
+                    cursor.execute(
+                        """INSERT INTO text_segments (session_id, timestamp, raw_text, source,
+                           is_filtered, char_count)
+                           VALUES (?, ?, ?, ?, ?, ?)""",
+                        (
+                            session_id, seg.timestamp,
+                            seg.raw_text, seg.source,
+                            int(seg.is_filtered), seg.char_count,
+                        ),
+                    )
+                self._conn.commit()
+                return session_id
+            except Exception:
+                self._conn.rollback()
+                raise
+            finally:
+                cursor.close()
 
     def insert_clipboard_record(self, record: ClipboardRecordModel):
         """插入一条剪贴板记录"""
@@ -251,7 +432,7 @@ class Database:
         with self._cursor() as cur:
             cur.execute(
                 f"""SELECT id, start_time, end_time, process_name, window_title,
-                    idle_seconds, active_seconds, is_filtered
+                    idle_seconds, active_seconds, is_filtered, category, icon
                     FROM sessions{where}
                     ORDER BY start_time DESC LIMIT ?""",
                 params,
@@ -264,6 +445,8 @@ class Database:
                 process_name=row[3], window_title=row[4],
                 idle_seconds=row[5], active_seconds=row[6],
                 is_filtered=bool(row[7]),
+                category=row[8] if row[8] else "其他",
+                icon=row[9] if row[9] else "📦",
             )
             for row in rows
         ]
@@ -286,6 +469,15 @@ class Database:
             )
             for row in rows
         ]
+
+    def count_text_segments(self, session_id: int) -> int:
+        """查询某个会话的文本片段数量（轻量查询，用于列表展示）"""
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM text_segments WHERE session_id = ?",
+                (session_id,),
+            )
+            return cur.fetchone()[0]
 
     def query_daily_report(self, date: str) -> DailyReportRecord | None:
         """查询某天的日报"""
@@ -380,7 +572,7 @@ class Database:
         with self._cursor() as cur:
             cur.execute(
                 """SELECT id, start_time, end_time, process_name, window_title,
-                          idle_seconds, active_seconds, is_filtered
+                          idle_seconds, active_seconds, is_filtered, category, icon
                    FROM sessions WHERE id = ?""",
                 (session_id,),
             )
@@ -391,6 +583,8 @@ class Database:
             id=row[0], start_time=row[1], end_time=row[2], process_name=row[3],
             window_title=row[4], idle_seconds=row[5], active_seconds=row[6],
             is_filtered=bool(row[7]),
+            category=row[8] if row[8] else "其他",
+            icon=row[9] if row[9] else "📦",
         )
 
     def search_text(self, keyword: str, limit: int = 50) -> list[dict]:
@@ -446,6 +640,88 @@ class Database:
             }
             for row in rows
         ]
+
+    def query_category_stats(
+        self,
+        date: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> list[dict]:
+        """按分类统计使用时长
+
+        Args:
+            date: 单日查询（YYYY-MM-DD）
+            start_date: 范围起始日（与 end_date 配合使用）
+            end_date: 范围结束日
+
+        Returns:
+            分类统计列表，按活跃时长降序排列
+        """
+        conditions = []
+        params: list = []
+        if date:
+            conditions.append("DATE(start_time) = ?")
+            params.append(date)
+        elif start_date and end_date:
+            conditions.append("DATE(start_time) BETWEEN ? AND ?")
+            params.extend([start_date, end_date])
+
+        where = " WHERE " + " AND ".join(conditions) if conditions else ""
+
+        with self._cursor() as cur:
+            cur.execute(
+                f"""SELECT COALESCE(category, '其他') as category,
+                    COALESCE(icon, '📦') as icon,
+                    COUNT(*) as session_count,
+                    SUM(active_seconds) as total_active,
+                    SUM(idle_seconds) as total_idle
+                    FROM sessions{where}
+                    GROUP BY category
+                    ORDER BY total_active DESC""",
+                params,
+            )
+            rows = cur.fetchall()
+
+        return [
+            {
+                "category": row[0],
+                "icon": row[1],
+                "session_count": row[2],
+                "active_seconds": row[3] or 0,
+                "idle_seconds": row[4] or 0,
+            }
+            for row in rows
+        ]
+
+    def backfill_categories(self) -> int:
+        """为已有的历史会话记录回填分类（批量更新）
+
+        仅更新 category 为 NULL 或 '其他' 的记录。
+
+        Returns: 更新的行数
+        """
+        from src.processor.app_classifier import AppClassifier
+        classifier = AppClassifier()
+
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT id, process_name, window_title FROM sessions "
+                "WHERE category IS NULL OR category = '其他'"
+            )
+            rows = cur.fetchall()
+
+            updated = 0
+            for row in rows:
+                session_id, process_name, window_title = row
+                category, icon = classifier.classify(process_name, window_title)
+                if category != "其他":
+                    cur.execute(
+                        "UPDATE sessions SET category = ?, icon = ? WHERE id = ?",
+                        (category, icon, session_id),
+                    )
+                    updated += 1
+
+            return updated
 
     # ==================== 周报/月报 CRUD ====================
 

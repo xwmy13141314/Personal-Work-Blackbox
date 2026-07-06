@@ -22,11 +22,13 @@ webview_submodules = collect_submodules('webview')
 webview_datas = collect_data_files('webview')
 dotnet_submodules = collect_submodules('pythonnet') + collect_submodules('clr_loader')
 dotnet_libs = collect_dynamic_libs('clr_loader') + collect_dynamic_libs('pythonnet')
+# 收集 pywin32 的动态库（pywintypes310.dll, pythoncom310.dll 等）
+pywin32_libs = collect_dynamic_libs('pywin32') + collect_dynamic_libs('win32')
 
 a = Analysis(
     ['src/main.py'],
     pathex=[str(ROOT)],
-    binaries=dotnet_libs,
+    binaries=dotnet_libs + pywin32_libs,
     datas=[
         ('config/config.example.yaml', 'config'),
         ('web_frontend', 'web_frontend'),
@@ -40,7 +42,16 @@ a = Analysis(
         'win32api',
         'win32con',
         'win32gui',
+        'win32process',
+        'win32event',
+        'win32security',
+        'win32profile',
+        'pywintypes',
+        'pythoncom',
         'pystray',
+        'bottle',
+        'proxy_tools',
+        'proxy_tools._proxy12',
         'PIL',
         'PIL.Image',
         'PIL.ImageDraw',
@@ -74,6 +85,10 @@ a = Analysis(
         'src.config',
         'src.config.settings',
         'src.config.defaults',
+        # 数据库加密（可选，未安装时 PyInstaller 会警告但不影响打包）
+        'pysqlcipher3',
+        'pysqlcipher3.dbapi2',
+        'sqlcipher3',
     ] + webview_submodules + dotnet_submodules + [
         'bottle',
         'proxy_tools',
@@ -90,6 +105,22 @@ a = Analysis(
         'IPython',
         'pytest',
         'pytest_asyncio',
+        # 排除 personal_recorder（macOS 专用模块，不影响 Windows 打包）
+        'src.personal_recorder',
+        'src.personal_recorder.*',
+        # 排除未使用的大型库
+        'tkinter',
+        'unittest',
+        'xml.dom',
+        'xml.sax',
+        'email',
+        'xmlrpc',
+        'pydoc',
+        'doctest',
+        'lib2to3',
+        'setuptools',
+        'pip',
+        'wheel',
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
@@ -111,7 +142,14 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    upx_exclude=[],
+    upx_exclude=[
+        # 不压缩 .NET 运行时 DLL（会导致崩溃）
+        'pythonnet',
+        'clr_loader',
+        'python310.dll',
+        'pywintypes310.dll',
+        'pythoncom310.dll',
+    ],
     runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,

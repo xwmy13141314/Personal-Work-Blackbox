@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "personal-work-blackbox"
-version = "0.3.0"
-description = "轻量化个人工作日志自动化采集、AI 摘要与个人记录器工具集"
+version = "4.0.0"
+description = "轻量化个人活动追踪与 AI 工作日志工具 · 隐私优先 · 本地存储"
 requires-python = ">=3.11"
 readme = "README.md"
 

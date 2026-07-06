@@ -21,6 +21,16 @@ def _make_key_event(key) -> KeyEvent:
     return KeyEvent(KeyEventType.PRESS, key=key)
 
 
+def _make_ime_event(text: str) -> KeyEvent:
+    """创建一个 IME 组合文本事件"""
+    return KeyEvent(
+        KeyEventType.PRESS,
+        key=None,
+        char=text,
+        is_ime_composition=True,
+    )
+
+
 class TestInputBuffer:
     """InputBuffer 状态机测试"""
 
@@ -220,3 +230,140 @@ class TestInputBuffer:
 
         assert result is False
         assert committed == []
+
+
+class TestInputBufferIME:
+    """InputBuffer IME 组合文本测试"""
+
+    def test_ime_basic_input(self):
+        """测试基本 IME 中文输入"""
+        committed = []
+        buf = InputBuffer(on_commit=lambda t: committed.append(t))
+
+        buf.process_event(_make_ime_event("继续"))
+        assert buf.current_text == "继续"
+
+        # Enter 提交
+        buf.process_event(_make_key_event(keyboard.Key.enter))
+        assert committed == ["继续"]
+        assert buf.is_empty
+
+    def test_ime_mixed_with_english(self):
+        """测试中文和英文混合输入"""
+        committed = []
+        buf = InputBuffer(on_commit=lambda t: committed.append(t))
+
+        buf.process_event(_make_char_event("h"))
+        buf.process_event(_make_char_event("i"))
+        buf.process_event(_make_ime_event("你好"))
+        buf.process_event(_make_char_event("!"))
+
+        assert buf.current_text == "hi你好!"
+
+        buf.process_event(_make_key_event(keyboard.Key.enter))
+        assert committed == ["hi你好!"]
+
+    def test_ime_multiple_compositions(self):
+        """测试多次 IME 组合输入"""
+        committed = []
+        buf = InputBuffer(on_commit=lambda t: committed.append(t))
+
+        buf.process_event(_make_ime_event("继续"))
+        buf.process_event(_make_ime_event("工作"))
+
+        assert buf.current_text == "继续工作"
+
+        buf.process_event(_make_key_event(keyboard.Key.enter))
+        assert committed == ["继续工作"]
+
+    def test_ime_after_ctrl_a(self):
+        """测试 Ctrl+A 全选后 IME 输入替换全部"""
+        committed = []
+        buf = InputBuffer(on_commit=lambda t: committed.append(t))
+
+        # 先输入英文
+        for c in "hello":
+            buf.process_event(_make_char_event(c))
+        assert buf.current_text == "hello"
+
+        # Ctrl+A 全选
+        buf.process_event(KeyEvent(
+            KeyEventType.PRESS,
+            key=keyboard.KeyCode.from_char("a"),
+            char="\x01",
+            ctrl_pressed=True,
+        ))
+
+        # IME 输入应替换全部
+        buf.process_event(_make_ime_event("替换"))
+
+        assert buf.current_text == "替换"
+
+    def test_ime_backspace(self):
+        """测试 IME 文本后的退格"""
+        buf = InputBuffer(on_commit=lambda t: None)
+
+        buf.process_event(_make_ime_event("继续"))
+        assert buf.current_text == "继续"
+
+        # 退格删除整段 IME 文本（作为单个缓冲区元素）
+        buf.process_event(_make_key_event(keyboard.Key.backspace))
+        assert buf.current_text == ""
+
+    def test_ime_then_english_backspace(self):
+        """测试 IME 文本 + 英文混合后的退格"""
+        buf = InputBuffer(on_commit=lambda t: None)
+
+        buf.process_event(_make_ime_event("你好"))
+        buf.process_event(_make_char_event("x"))
+        assert buf.current_text == "你好x"
+
+        # 退格删除英文 'x'
+        buf.process_event(_make_key_event(keyboard.Key.backspace))
+        assert buf.current_text == "你好"
+
+        # 再退格删除整段 IME 文本
+        buf.process_event(_make_key_event(keyboard.Key.backspace))
+        assert buf.current_text == ""
+
+    def test_ime_force_commit(self):
+        """测试 IME 文本的强制提交"""
+        committed = []
+        buf = InputBuffer(on_commit=lambda t: committed.append(t))
+
+        buf.process_event(_make_ime_event("测试"))
+        buf.force_commit()
+
+        assert committed == ["测试"]
+        assert buf.is_empty
+
+    def test_ime_tab_commits(self):
+        """测试 IME 文本后 Tab 提交"""
+        committed = []
+        buf = InputBuffer(on_commit=lambda t: committed.append(t))
+
+        buf.process_event(_make_ime_event("完成"))
+        buf.process_event(_make_key_event(keyboard.Key.tab))
+
+        assert committed == ["完成"]
+        assert buf.is_empty
+
+    def test_ime_escape_clears(self):
+        """测试 IME 文本后 Escape 清空"""
+        committed = []
+        buf = InputBuffer(on_commit=lambda t: committed.append(t))
+
+        buf.process_event(_make_ime_event("丢弃"))
+        buf.process_event(_make_key_event(keyboard.Key.esc))
+
+        assert buf.is_empty
+        assert committed == []
+
+    def test_ime_event_is_not_printable_char(self):
+        """测试 IME 事件不会被当作普通可打印字符重复处理"""
+        buf = InputBuffer(on_commit=lambda t: None)
+
+        # IME 事件 char 长度 > 1，is_printable_char 应为 False
+        event = _make_ime_event("继续")
+        assert not event.is_printable_char
+        assert event.is_ime_text

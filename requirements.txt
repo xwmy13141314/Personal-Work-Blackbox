@@ -7,6 +7,8 @@ pywin32>=306               # Win32 API 调用（窗口追踪、剪贴板、空�
 
 # ===== 存储层 =====
 # SQLite 为 Python 内置，无需额外安装
+# 数据库加密（可选）：需安装 sqlcipher3，未安装时自动回退到明文 SQLite
+sqlcipher3-binary>=0.5.0  # 可选：用于数据库加密
 
 # ===== AI 层 =====
 httpx>=0.27.0              # 异步 HTTP 客户端（调用 Ollama / DeepSeek API）

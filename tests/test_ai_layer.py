@@ -327,7 +327,7 @@ class TestRetryMechanism:
         }
         client = LLMClient(config)
 
-        with pytest.raises(ValueError, match="GLM API Key 未配置"):
+        with pytest.raises(ValueError, match="glm: API Key 未配置"):
             await client._call_with_retry("glm", [{"role": "user", "content": "test"}])
 
     @pytest.mark.asyncio
@@ -363,7 +363,11 @@ class TestRetryMechanism:
         """测试诊断功能"""
         config = {
             "default_provider": "glm",
-            "glm": {"api_key": "test-key", "model": "glm-4-flash"},
+            "glm": {
+                "api_key": "test-key",
+                "model": "glm-4-flash",
+                "base_url": "https://open.bigmodel.cn/api/paas/v4",
+            },
         }
         client = LLMClient(config)
         results = client.diagnose()
