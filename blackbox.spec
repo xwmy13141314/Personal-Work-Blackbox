@@ -111,9 +111,6 @@ a = Analysis(
         # 排除未使用的大型库
         'tkinter',
         'unittest',
-        'xml.dom',
-        'xml.sax',
-        'email',
         'xmlrpc',
         'pydoc',
         'doctest',
