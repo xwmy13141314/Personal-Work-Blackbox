@@ -52,6 +52,7 @@ import { Sidebar } from "@/app/components/Sidebar";
 import { StatsView } from "@/app/components/StatsView";
 import { ActivityView } from "@/app/components/ActivityView";
 import { SettingsView } from "@/app/components/SettingsView";
+import { AboutView } from "@/app/components/AboutView";
 
 // ==================== 主应用 ====================
 
@@ -415,6 +416,7 @@ export default function App() {
             />
           )}
           {view === "settings" && <SettingsView api={api} apiConfig={apiConfig} />}
+          {view === "about" && <AboutView />}
         </main>
 
         {/* ===== Right panel ===== */}

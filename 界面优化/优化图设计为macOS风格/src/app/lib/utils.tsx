@@ -1,15 +1,16 @@
 import React from "react";
-import { FileText, BarChart3, Activity, Settings } from "lucide-react";
+import { FileText, BarChart3, Activity, Settings, Info } from "lucide-react";
 import type { ReportType } from "@/lib/pywebview";
 
 // ==================== 视图键 ====================
-export type ViewKey = "report" | "stats" | "activity" | "settings";
+export type ViewKey = "report" | "stats" | "activity" | "settings" | "about";
 
 export const navItems: { key: ViewKey; icon: typeof FileText; label: string }[] = [
   { key: "report", icon: FileText, label: "报告" },
   { key: "stats", icon: BarChart3, label: "统计" },
   { key: "activity", icon: Activity, label: "活动" },
   { key: "settings", icon: Settings, label: "设置" },
+  { key: "about", icon: Info, label: "关于" },
 ];
 
 export const REPORT_TABS: { key: ReportType; label: string; title: string }[] = [
