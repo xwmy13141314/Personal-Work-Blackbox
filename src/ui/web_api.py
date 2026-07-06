@@ -421,6 +421,21 @@ class BlackboxAPI:
         classifier = AppClassifier()
         return classifier.get_all_categories()
 
+    def convert_pinyin(self, text: str) -> dict:
+        """将文本中的拼音转换为汉字（仅展示用，不修改原始数据）"""
+        try:
+            from src.processor.pinyin_converter import convert_pinyin_to_hanzi, has_convertible_pinyin
+            converted = convert_pinyin_to_hanzi(text)
+            return {
+                "original": text,
+                "converted": converted,
+                "has_pinyin": has_convertible_pinyin(text),
+                "changed": converted != text,
+            }
+        except Exception as e:
+            logger.exception("拼音转换失败")
+            return {"original": text, "converted": text, "has_pinyin": False, "changed": False}
+
     # ==================== API 配置（脱敏） ====================
 
     def get_api_config(self) -> dict:

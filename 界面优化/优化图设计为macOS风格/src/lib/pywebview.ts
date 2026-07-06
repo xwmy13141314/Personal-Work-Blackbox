@@ -141,6 +141,13 @@ export interface BlackboxApi {
   get_category_stats(range_type: string, date: string): Promise<CategoryStats>
   backfill_categories(): Promise<{ ok: boolean; updated?: number; error?: string }>
   get_categories(): Promise<CategoryItem[]>
+  // 拼音转汉字
+  convert_pinyin: (text: string) => Promise<{
+    original: string;
+    converted: string;
+    has_pinyin: boolean;
+    changed: boolean;
+  }>
   // 隐私告知同意状态
   get_consent_status(): Promise<{ consented: boolean; window_only: boolean; timestamp: string }>
   set_consent(window_only: boolean): Promise<{ ok: boolean; error?: string }>
@@ -274,6 +281,7 @@ const mockApi: BlackboxApi = {
     { category: "AI 工具", icon: "🤖" },
     { category: "其他", icon: "📦" },
   ],
+  convert_pinyin: async (text: string) => ({ original: text, converted: text, has_pinyin: false, changed: false }),
   get_consent_status: async () => ({ consented: false, window_only: false, timestamp: "" }),
   set_consent: async () => ({ ok: true }),
   // 专注模式 mock

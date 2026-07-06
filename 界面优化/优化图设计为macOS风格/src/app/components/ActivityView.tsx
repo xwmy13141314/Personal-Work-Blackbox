@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Activity, Search } from "lucide-react";
+import { Activity, Search, Languages } from "lucide-react";
 import { fmtDuration, Empty } from "@/app/lib/utils";
 import type { BlackboxApi, SessionItem, SessionDetail, SearchResult } from "@/lib/pywebview";
 
@@ -23,6 +23,9 @@ export function ActivityView({
   const [expanded, setExpanded] = useState<number | null>(null);
   const [detail, setDetail] = useState<SessionDetail | null>(null);
   const [loading, setLoading] = useState(false);
+  const [showPinyinConverted, setShowPinyinConverted] = useState(false);
+  const [convertedSegments, setConvertedSegments] = useState<string[] | null>(null);
+  const [convertedResults, setConvertedResults] = useState<Record<number, string>>({});
 
   const q = search.trim();
   const mode: "search" | "list" = q ? "search" : "list";
@@ -49,6 +52,48 @@ export function ActivityView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api, date, q]);
 
+  // 拼音转汉字：会话详情片段批量转换
+  useEffect(() => {
+    if (!api || !showPinyinConverted || !detail || !detail.segments.length) {
+      setConvertedSegments(null);
+      return;
+    }
+    let cancelled = false;
+    const convertAll = async () => {
+      const texts = await Promise.all(
+        detail.segments.map((seg) =>
+          seg.is_filtered
+            ? seg.raw_text
+            : api.convert_pinyin(seg.raw_text).then((r) => r.converted).catch(() => seg.raw_text)
+        )
+      );
+      if (!cancelled) setConvertedSegments(texts);
+    };
+    convertAll();
+    return () => { cancelled = true; };
+  }, [api, showPinyinConverted, detail]);
+
+  // 拼音转汉字：搜索结果批量转换
+  useEffect(() => {
+    if (!api || !showPinyinConverted || !results.length) {
+      setConvertedResults({});
+      return;
+    }
+    let cancelled = false;
+    const convertAll = async () => {
+      const entries = await Promise.all(
+        results.map((r) =>
+          r.is_filtered
+            ? [r.id, r.text] as [number, string]
+            : api.convert_pinyin(r.text).then((res) => [r.id, res.converted] as [number, string]).catch(() => [r.id, r.text] as [number, string])
+        )
+      );
+      if (!cancelled) setConvertedResults(Object.fromEntries(entries));
+    };
+    convertAll();
+    return () => { cancelled = true; };
+  }, [api, showPinyinConverted, results]);
+
   const openDetail = async (id: number) => {
     if (!api) return;
     if (expanded === id) {
@@ -72,6 +117,16 @@ export function ActivityView({
             清除搜索
           </button>
         )}
+        <button
+          onClick={() => setShowPinyinConverted(!showPinyinConverted)}
+          className={`text-[11px] px-2 py-0.5 rounded-full transition-all ${
+            showPinyinConverted ? "bg-[var(--wt-accent)] text-white" : "text-[var(--wt-text-muted)] hover:bg-black/[0.06]"
+          }`}
+          title="切换拼音/汉字显示"
+        >
+          <Languages className="w-3 h-3 inline mr-1" />
+          {showPinyinConverted ? "智能识别" : "原文"}
+        </button>
       </div>
 
       <div className="space-y-2">
@@ -90,7 +145,7 @@ export function ActivityView({
                   </span>
                 </div>
                 <p className="text-[12px] mt-1 text-[var(--wt-text)] line-clamp-2 break-all">
-                  {r.is_filtered ? "（已隐私过滤）" : r.text}
+                  {r.is_filtered ? "（已隐私过滤）" : (showPinyinConverted ? (convertedResults[r.id] ?? r.text) : r.text)}
                 </p>
                 {r.window_title && <p className="text-[10px] text-[var(--wt-text-faint)] truncate mt-0.5">{r.window_title}</p>}
               </div>
@@ -126,7 +181,7 @@ export function ActivityView({
                     detail.segments.map((seg, i) => (
                       <p key={i} className="text-[11px] text-[var(--wt-text-secondary)] break-all">
                         <span className="text-[var(--wt-text-muted)] mr-1">{seg.timestamp.slice(11, 16)}</span>
-                        {seg.is_filtered ? "（已隐私过滤）" : seg.raw_text}
+                        {seg.is_filtered ? "（已隐私过滤）" : (showPinyinConverted && convertedSegments ? convertedSegments[i] : seg.raw_text)}
                       </p>
                     ))
                   ) : (

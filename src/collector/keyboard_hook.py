@@ -24,6 +24,11 @@ GCS_RESULTSTR = 0x0800  # 获取已完成的组合结果字符串
 GCS_COMPSTR = 0x0008   # 获取正在组合中的字符串
 WM_IME_COMPOSITION = 0x010F
 
+# 消息钩子常量（WH_GETMESSAGE 方案：拦截 WM_IME_COMPOSITION）
+WH_GETMESSAGE = 3       # 安装一个钩子，监视发往消息队列的消息
+HC_ACTION = 0           # 钩子回调 nCode 中的动作码
+PM_REMOVE = 0x0001      # PeekMessage 移除消息标志
+
 # 加载 IMM 库（仅 Windows 可用）
 try:
     import ctypes
@@ -52,6 +57,52 @@ try:
 
     _user32.GetForegroundWindow.restype = ctypes.wintypes.HWND
     _user32.GetForegroundWindow.argtypes = []
+
+    # ==================== 消息钩子相关绑定（WH_GETMESSAGE 方案） ====================
+
+    # MSG 结构体 — 对应 Windows API 的 MSG
+    class MSG(ctypes.Structure):
+        _fields_ = [
+            ("hwnd", ctypes.wintypes.HWND),
+            ("message", ctypes.wintypes.UINT),
+            ("wParam", ctypes.wintypes.WPARAM),
+            ("lParam", ctypes.wintypes.LPARAM),
+            ("time", ctypes.wintypes.DWORD),
+            ("pt", ctypes.wintypes.POINT),
+        ]
+
+    # 钩子回调函数类型 — 对应 Windows API 的 HOOKPROC
+    HOOKPROC = ctypes.WINFUNCTYPE(
+        ctypes.c_long,              # LRESULT
+        ctypes.c_int,               # int (nCode)
+        ctypes.wintypes.WPARAM,     # WPARAM
+        ctypes.wintypes.LPARAM,     # LPARAM (指向 MSG*)
+    )
+
+    # 设置 SetWindowsHookExW / UnhookWindowsHookEx / CallNextHookEx 函数签名
+    _user32.SetWindowsHookExW.restype = ctypes.wintypes.HHOOK
+    _user32.SetWindowsHookExW.argtypes = [
+        ctypes.c_int,               # int (idHook)
+        HOOKPROC,                   # HOOKPROC (lpfn)
+        ctypes.wintypes.HINSTANCE,  # HINSTANCE (hMod)
+        ctypes.wintypes.DWORD,      # DWORD (dwThreadId)
+    ]
+
+    _user32.UnhookWindowsHookEx.restype = ctypes.wintypes.BOOL
+    _user32.UnhookWindowsHookEx.argtypes = [ctypes.wintypes.HHOOK]
+
+    _user32.CallNextHookEx.restype = ctypes.c_long  # LRESULT
+    _user32.CallNextHookEx.argtypes = [
+        ctypes.wintypes.HHOOK,      # HHOOK
+        ctypes.c_int,               # int (nCode)
+        ctypes.wintypes.WPARAM,     # WPARAM
+        ctypes.wintypes.LPARAM,     # LPARAM
+    ]
+
+    # kernel32 — 获取当前模块句柄
+    _kernel32 = ctypes.windll.kernel32
+    _kernel32.GetModuleHandleW.restype = ctypes.wintypes.HMODULE
+    _kernel32.GetModuleHandleW.argtypes = [ctypes.wintypes.LPCWSTR]
 
     _HAS_IMM = True
 except Exception:
@@ -124,6 +175,105 @@ def _is_ime_active(hwnd: int) -> bool:
             _imm32.ImmReleaseContext(hwnd, imc)
     except Exception:
         return False
+
+
+class IMEMessageHook:
+    """IME 消息钩子（方案 A：WH_GETMESSAGE 拦截 WM_IME_COMPOSITION）
+
+    通过 ``SetWindowsHookExW(WH_GETMESSAGE)`` 安装一个全局消息钩子，在
+    ``WM_IME_COMPOSITION`` 消息到达目标窗口前读取 ``GCS_RESULTSTR``，此时数据
+    一定存在。
+
+    相比在 pynput 按键回调中轮询 ``GCS_RESULTSTR``，消息钩子方案时序有保障：
+    回调发生在 IME 组合完成的同一条消息流转中，结果字符串尚未被清空。
+
+    WH_GETMESSAGE 是线程级钩子（非全局），只在安装它的线程的消息循环中有效。
+    本类在 :meth:`start` 时安装钩子，调用方需确保在具备消息循环的线程中启动
+    （pynput Listener 内部即有消息循环）。
+
+    重要：``self._hook_proc`` 必须保存为实例属性，否则 Python GC 回收闭包后
+    Windows 侧仍会回调该函数指针，导致访问违宪崩溃。
+    """
+
+    def __init__(self, on_ime_result: Callable[[str], None]):
+        """
+        Args:
+            on_ime_result: IME 组合完成回调，参数为组合结果文本
+        """
+        self._on_ime_result = on_ime_result
+        self._hook: "ctypes.wintypes.HHOOK | None" = None
+        # 必须保持回调函数引用，防止被 GC 回收导致崩溃
+        self._hook_proc = HOOKPROC(self._hook_callback)
+        self._running = False
+
+    def start(self):
+        """启动消息钩子
+
+        通过 ``SetWindowsHookExW`` 安装 WH_GETMESSAGE 钩子。所有 ctypes 调用均
+        包裹在 try/except 中，即使钩子安装失败也不会影响正常键盘捕获。
+        """
+        if self._hook:
+            return
+        try:
+            # 获取当前模块句柄
+            h_module = _kernel32.GetModuleHandleW(None)
+            # 安装 WH_GETMESSAGE 钩子
+            self._hook = _user32.SetWindowsHookExW(
+                WH_GETMESSAGE,
+                self._hook_proc,
+                h_module,
+                0,  # 0 = 当前线程（线程级钩子）
+            )
+            if self._hook:
+                self._running = True
+                logger.info("IME 消息钩子已安装 (WH_GETMESSAGE)")
+            else:
+                logger.error("IME 消息钩子安装失败")
+        except Exception:
+            logger.exception("IME 消息钩子启动异常")
+
+    def stop(self):
+        """停止消息钩子"""
+        if self._hook:
+            try:
+                _user32.UnhookWindowsHookEx(self._hook)
+                logger.info("IME 消息钩子已卸载")
+            except Exception:
+                logger.exception("IME 消息钩子卸载异常")
+            self._hook = None
+            self._running = False
+
+    def _hook_callback(self, nCode: int, wParam: int, lParam: int) -> int:
+        """钩子回调函数
+
+        Args:
+            nCode: ``HC_ACTION`` 时才有意义
+            wParam: 消息是否被移除 (PM_REMOVE)
+            lParam: 指向 MSG 结构体的指针
+        """
+        if nCode == HC_ACTION and lParam:
+            try:
+                # 从 lParam 指针读取 MSG 结构体
+                msg = MSG.from_address(lParam)
+
+                # 检查是否是 WM_IME_COMPOSITION 消息
+                if msg.message == WM_IME_COMPOSITION:
+                    # 检查 lParam 中是否包含 GCS_RESULTSTR 标志
+                    # WM_IME_COMPOSITION 的 lParam 的位标志指示哪些数据变了
+                    if msg.lParam & GCS_RESULTSTR:
+                        # 在消息到达目标窗口前读取结果
+                        result = _get_ime_result_string(msg.hwnd)
+                        if result:
+                            self._on_ime_result(result)
+            except Exception:
+                logger.debug("IME 消息钩子回调异常", exc_info=True)
+
+        # 必须调用 CallNextHookEx 传递消息，否则会阻断消息链
+        return _user32.CallNextHookEx(self._hook, nCode, wParam, lParam)
+
+    @property
+    def is_running(self) -> bool:
+        return self._running
 
 
 class KeyEventType(Enum):
@@ -242,10 +392,21 @@ class KeyboardHook:
         self._ime_active = False
         self._last_ime_result = ""  # 上次获取到的 IME 结果，用于去重
 
+        # IME 消息钩子（方案 A：WH_GETMESSAGE 拦截 WM_IME_COMPOSITION）
+        # 在 IME 组合完成消息到达目标窗口前读取 GCS_RESULTSTR，时序有保障。
+        # 原有 _check_and_emit_ime_result 轮询逻辑作为兜底方案保留。
+        self._ime_hook: IMEMessageHook | None = None
+        if _HAS_IMM:
+            self._ime_hook = IMEMessageHook(on_ime_result=self._on_ime_result_from_hook)
+
     def start(self):
         """启动键盘监听"""
         if self._listener:
             return
+
+        # 先启动 IME 消息钩子（方案 A：WH_GETMESSAGE 拦截 WM_IME_COMPOSITION）
+        if self._ime_hook:
+            self._ime_hook.start()
 
         self._listener = keyboard.Listener(
             on_press=self._on_press,
@@ -256,8 +417,12 @@ class KeyboardHook:
 
     def stop(self):
         """停止键盘监听"""
+        # 先停止 IME 消息钩子
+        if self._ime_hook:
+            self._ime_hook.stop()
+
         if self._listener:
-            # 停止前检查最后的 IME 组合结果
+            # 保留原有 _check_and_emit_ime_result 作为兜底
             self._check_and_emit_ime_result()
             self._listener.stop()
             self._listener = None
@@ -311,6 +476,25 @@ class KeyboardHook:
                 self._on_event(event)
         except Exception:
             logger.exception("键盘事件处理异常")
+
+    def _on_ime_result_from_hook(self, result: str):
+        """IME 消息钩子回调 — 收到组合完成的文本
+
+        这是方案 A 的核心：通过消息钩子在 WM_IME_COMPOSITION 到达窗口前
+        读取 GCS_RESULTSTR，时序有保障。
+
+        与兜底的 :meth:`_check_and_emit_ime_result` 共享 ``_last_ime_result``
+        去重缓存，避免同一组合结果被重复发射。
+        """
+        if result and result != self._last_ime_result:
+            event = KeyEvent(
+                KeyEventType.PRESS,
+                key=None,
+                char=result,
+                is_ime_composition=True,
+            )
+            self._on_event(event)
+            self._last_ime_result = result
 
     def _check_and_emit_ime_result(self):
         """检查并发射 IME 组合结果文本
