@@ -249,19 +249,73 @@ class TestInputBufferIME:
         assert buf.is_empty
 
     def test_ime_mixed_with_english(self):
-        """测试中文和英文混合输入"""
+        """测试中文和英文混合输入（拼音字母被 IME 文本替换）
+
+        新行为：当 IME 组合文本到达时，缓冲区末尾的连续 ASCII 小写字母
+        （拼音字母）会被自动移除，避免缓冲区同时包含拼音和汉字。
+        """
         committed = []
         buf = InputBuffer(on_commit=lambda t: committed.append(t))
 
+        # "hi" 被当作拼音字母，IME "你好" 到达时被移除
         buf.process_event(_make_char_event("h"))
         buf.process_event(_make_char_event("i"))
         buf.process_event(_make_ime_event("你好"))
+        # "!" 不是 ASCII 小写字母，不受影响
         buf.process_event(_make_char_event("!"))
 
-        assert buf.current_text == "hi你好!"
+        assert buf.current_text == "你好!"
 
         buf.process_event(_make_key_event(keyboard.Key.enter))
-        assert committed == ["hi你好!"]
+        assert committed == ["你好!"]
+
+    def test_ime_replaces_pinyin_letters(self):
+        """测试 IME 组合文本替换拼音字母（核心去重逻辑）
+
+        用户输入 "jixu"（继续的拼音），pynput 逐字符捕获，
+        然后 IME 钩子发出 "继续"，缓冲区应自动移除 "jixu" 并保留 "继续"。
+        """
+        committed = []
+        buf = InputBuffer(on_commit=lambda t: committed.append(t))
+
+        # 模拟拼音输入
+        for ch in "jixu":
+            buf.process_event(_make_char_event(ch))
+        assert buf.current_text == "jixu"
+
+        # IME 组合结果到达
+        buf.process_event(_make_ime_event("继续"))
+        assert buf.current_text == "继续"
+
+        buf.process_event(_make_key_event(keyboard.Key.enter))
+        assert committed == ["继续"]
+
+    def test_ime_preserves_non_ascii_before(self):
+        """测试 IME 去重不会移除非 ASCII 字符（如已输入的中文）"""
+        buf = InputBuffer(on_commit=lambda t: None)
+
+        buf.process_event(_make_ime_event("已经"))
+        # "ni" 是拼音字母，应被移除
+        buf.process_event(_make_char_event("n"))
+        buf.process_event(_make_char_event("i"))
+        buf.process_event(_make_ime_event("你"))
+
+        # "已经" 不受影响，"ni" 被移除，"你" 被添加
+        assert buf.current_text == "已经你"
+
+    def test_ime_preserves_uppercase_before(self):
+        """测试 IME 去重不会移除大写字母"""
+        buf = InputBuffer(on_commit=lambda t: None)
+
+        buf.process_event(_make_char_event("A"))
+        buf.process_event(_make_char_event("B"))
+        # "ab" 是小写字母，应被移除
+        buf.process_event(_make_char_event("a"))
+        buf.process_event(_make_char_event("b"))
+        buf.process_event(_make_ime_event("测试"))
+
+        # "AB" 不受影响（大写），"ab" 被移除
+        assert buf.current_text == "AB测试"
 
     def test_ime_multiple_compositions(self):
         """测试多次 IME 组合输入"""

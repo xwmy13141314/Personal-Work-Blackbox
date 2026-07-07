@@ -165,12 +165,33 @@ class InputBuffer:
 
         与 _on_char 不同，IME 组合文本是输入法已完成的整段汉字，
         作为一个语义片段整体插入缓冲区，而非逐字符追加。
+
+        智能去重：当 IME 组合结果到达时，自动移除缓冲区末尾的连续 ASCII
+        小写字母（它们是输入该汉字时敲下的拼音字母），避免缓冲区同时
+        包含拼音和汉字（如 "jixu继续"）。
         """
         # 如果之前全选了，先清空（下次输入替换全部）
         if self._select_all:
             self._buffer.clear()
             self._cursor_pos = 0
             self._select_all = False
+
+        # 智能去重：移除光标前方连续的 ASCII 小写字母（拼音字母）
+        # 这些字母是用户输入拼音时 pynput 捕获的，现在被 IME 组合结果替换
+        removed_count = 0
+        while self._cursor_pos > 0 and removed_count < 12:
+            idx = self._cursor_pos - 1
+            if idx < len(self._buffer):
+                ch = self._buffer[idx]
+                # 只移除单个 ASCII 小写字母（拼音由 a-z 组成）
+                if len(ch) == 1 and ch.isascii() and ch.islower():
+                    self._buffer.pop(idx)
+                    self._cursor_pos -= 1
+                    removed_count += 1
+                else:
+                    break
+            else:
+                break
 
         # 长度限制检查（按当前缓冲区元素数）
         if len(self._buffer) >= self._max_length:

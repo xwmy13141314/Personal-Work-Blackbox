@@ -443,8 +443,10 @@ class KeyboardHook:
                 # 特殊键处理
                 event = KeyEvent(KeyEventType.PRESS, key)
 
-                # Enter/Backspace/Delete/Tab 始终传递
-                if key in (keyboard.Key.enter, keyboard.Key.backspace, keyboard.Key.delete, keyboard.Key.tab):
+                # Enter/Backspace/Delete/Tab/Space 始终传递
+                # Space 也触发 IME 结果检查（中文输入法用空格确认候选词）
+                if key in (keyboard.Key.enter, keyboard.Key.backspace,
+                           keyboard.Key.delete, keyboard.Key.tab, keyboard.Key.space):
                     # 在发送特殊键之前，先检查 IME 组合结果
                     self._check_and_emit_ime_result()
                     self._on_event(event)
@@ -452,23 +454,18 @@ class KeyboardHook:
                 elif self._capture_hotkeys:
                     self._on_event(event)
             else:
-                # 普通字符键
+                # 普通字符键 — 始终传递到缓冲区
+                # 注意：不再根据 ImmGetOpenStatus 过滤按键。
+                # 原因：Windows 上只要安装了中文输入法，ImmGetOpenStatus 在英文模式下
+                # 也返回 True，导致所有按键被丢弃（#BUG: 07-07 所有活动无文本记录）。
+                # 现在：所有按键正常传递，IME 消息钩子负责捕获中文组合结果，
+                # InputBuffer 在收到组合结果时自动移除末尾的拼音字母。
                 raw_char = getattr(key, 'char', None)
                 if raw_char is not None:
                     char = raw_char
                 else:
                     char = str(key)
 
-                # 检查 IME 状态 — IME 活动时不发送单个拼音字母
-                if _HAS_IMM:
-                    hwnd = _user32.GetForegroundWindow()
-                    if hwnd and _is_ime_active(hwnd):
-                        # IME 活动中 — 检查组合结果而非发送单个字符
-                        self._ime_active = True
-                        self._check_and_emit_ime_result()
-                        return  # 不发送单个拼音字母
-
-                self._ime_active = False
                 event = KeyEvent(
                     KeyEventType.PRESS, key, char=char,
                     ctrl_pressed=self._ctrl_pressed,

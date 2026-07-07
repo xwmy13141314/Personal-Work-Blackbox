@@ -234,3 +234,38 @@ class TestKeyboardHookIMEResultDedup:
         hook._on_ime_result_from_hook("")
 
         assert events == []
+
+
+# ==================== KeyboardHook 按键传递测试 ====================
+
+class TestKeyboardHookCharPassThrough:
+    """验证普通字符按键始终传递到回调（不再被 IME 状态检查丢弃）
+
+    回归测试：07-07 bug — ImmGetOpenStatus 在英文模式下也返回 True，
+    导致所有字符按键被 return 丢弃，活动明细全部显示"无文本输入记录"。
+    """
+
+    def test_char_always_passed_through(self):
+        """普通字符按键应始终传递到 on_event 回调"""
+        from pynput import keyboard
+        events = []
+        hook = KeyboardHook(on_event=lambda e: events.append(e))
+
+        # 模拟 pynput 调用 _on_press，传入一个普通字符键
+        key = keyboard.KeyCode.from_char('a')
+        hook._on_press(key)
+
+        assert len(events) == 1
+        assert events[0].char == 'a'
+
+    def test_multiple_chars_all_passed(self):
+        """连续输入多个字符都应被传递"""
+        from pynput import keyboard
+        events = []
+        hook = KeyboardHook(on_event=lambda e: events.append(e))
+
+        for ch in "hello":
+            hook._on_press(keyboard.KeyCode.from_char(ch))
+
+        assert len(events) == 5
+        assert ''.join(e.char for e in events) == "hello"
