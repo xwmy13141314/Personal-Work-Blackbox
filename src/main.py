@@ -163,6 +163,17 @@ class BlackboxEngine:
         self._clipboard_monitor: ClipboardMonitor | None = None
         self._idle_detector: IdleDetector | None = None
 
+        # 诊断：验证 pynput 键盘后端（打包后可能静默回退到 _dummy）
+        try:
+            from pynput import keyboard as _kb
+            _backend = _kb.Listener.__module__
+            if '_dummy' in _backend:
+                logger.error("pynput 键盘后端为 _dummy（空操作）！键盘事件将无法捕获")
+            else:
+                logger.info("pynput 键盘后端: %s", _backend)
+        except Exception:
+            logger.exception("pynput 后端检查失败")
+
         # 状态
         self._running = False
         self._stop_event = Event()

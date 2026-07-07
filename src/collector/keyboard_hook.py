@@ -413,7 +413,12 @@ class KeyboardHook:
             on_release=self._on_release,
         )
         self._listener.start()
-        logger.info("KeyboardHook 已启动")
+
+        # 诊断：验证 Listener 线程是否存活
+        if not self._listener.is_alive():
+            logger.error("pynput Listener 启动后线程未存活！键盘事件将无法捕获")
+        else:
+            logger.info("KeyboardHook 已启动 (backend: %s)", keyboard.Listener.__module__)
 
     def stop(self):
         """停止键盘监听"""

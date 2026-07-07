@@ -24,6 +24,8 @@ dotnet_submodules = collect_submodules('pythonnet') + collect_submodules('clr_lo
 dotnet_libs = collect_dynamic_libs('clr_loader') + collect_dynamic_libs('pythonnet')
 # 收集 pywin32 的动态库（pywintypes310.dll, pythoncom310.dll 等）
 pywin32_libs = collect_dynamic_libs('pywin32') + collect_dynamic_libs('win32')
+# 收集 pynput 全部子模块（关键：_win32 后端必须包含，否则静默回退到 _dummy 空操作后端）
+pynput_submodules = collect_submodules('pynput')
 
 a = Analysis(
     ['src/main.py'],
@@ -38,6 +40,13 @@ a = Analysis(
         'pynput.keyboard',
         'pynput.mouse',
         'pynput._vendor',
+        'pynput._util',
+        'pynput._util.win32',
+        'pynput._util.win32_vks',
+        'pynput.keyboard._win32',
+        'pynput.keyboard._base',
+        'pynput.mouse._win32',
+        'pynput.mouse._base',
         'win32clipboard',
         'win32api',
         'win32con',
@@ -94,7 +103,7 @@ a = Analysis(
         'pysqlcipher3',
         'pysqlcipher3.dbapi2',
         'sqlcipher3',
-    ] + webview_submodules + dotnet_submodules + [
+    ] + webview_submodules + dotnet_submodules + pynput_submodules + [
         'bottle',
         'proxy_tools',
     ],
