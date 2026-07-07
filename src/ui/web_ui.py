@@ -67,6 +67,15 @@ def run_web():
         height=720,
         min_size=(900, 600),
     )
+
+    # 在主线程安装键盘钩子（必须在 webview.start() 之前）
+    # pywebview 的消息循环将处理 WH_KEYBOARD_LL 回调
+    try:
+        engine.install_keyboard_hook()
+        logger.info("键盘钩子已在主线程安装（webview.start 之前）")
+    except Exception:
+        logger.exception("主线程安装键盘钩子失败")
+
     # 窗口关闭时优雅释放引擎（含数据库）
     def _on_closing():
         try:

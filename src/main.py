@@ -166,6 +166,7 @@ class BlackboxEngine:
         # 状态
         self._running = False
         self._stop_event = Event()
+        self._keyboard_paused = False  # 暂停标志（替代 stop/start 钩子）
 
         # AI 摘要层
         self._report_generator = None
@@ -205,6 +206,23 @@ class BlackboxEngine:
         except Exception:
             logger.exception("REST API 初始化失败")
 
+    def install_keyboard_hook(self):
+        """在调用线程上安装键盘钩子（必须在主线程调用）
+
+        由于 WH_KEYBOARD_LL 钩子需要调用线程有消息泵，
+        此方法必须在 pywebview 主线程（webview.start() 之前）调用。
+        """
+        if self._keyboard_hook:
+            logger.info("键盘钩子已存在，跳过安装")
+            return
+        if self._settings.collection["keyboard_enabled"]:
+            self._keyboard_hook = KeyboardHook(
+                on_event=self._on_keyboard_event,
+                capture_hotkeys=self._settings.collection["capture_hotkeys"],
+            )
+            self._keyboard_hook.start()
+            logger.info("键盘钩子已在主线程安装")
+
     def start(self):
         """启动采集引擎"""
         if self._running:
@@ -228,11 +246,15 @@ class BlackboxEngine:
 
         # 启动键盘监听
         if self._settings.collection["keyboard_enabled"]:
-            self._keyboard_hook = KeyboardHook(
-                on_event=self._on_keyboard_event,
-                capture_hotkeys=self._settings.collection["capture_hotkeys"],
-            )
-            self._keyboard_hook.start()
+            if not self._keyboard_hook:
+                # 钩子未在主线程安装，在此安装（非主线程可能无法接收回调）
+                self._keyboard_hook = KeyboardHook(
+                    on_event=self._on_keyboard_event,
+                    capture_hotkeys=self._settings.collection["capture_hotkeys"],
+                )
+                self._keyboard_hook.start()
+                logger.warning("键盘钩子在非主线程安装，可能无法接收回调")
+            # 已在主线程安装的钩子无需重复安装
 
         # 启动剪贴板监控
         if self._settings.collection["clipboard_enabled"]:
@@ -305,23 +327,16 @@ class BlackboxEngine:
         logger.info("引擎已完全关闭（数据库连接已释放）")
 
     def pause(self):
-        """暂停采集"""
+        """暂停采集（不卸载钩子，改用标志位忽略事件）"""
         self._session_manager.pause()
-        if self._keyboard_hook:
-            self._keyboard_hook.stop()
-            self._keyboard_hook = None
+        self._keyboard_paused = True
 
     def resume(self):
         """恢复采集"""
+        self._keyboard_paused = False
         if self._window_tracker:
             ctx = self._window_tracker.current_context
             self._session_manager.resume(ctx)
-        if self._settings.collection["keyboard_enabled"]:
-            self._keyboard_hook = KeyboardHook(
-                on_event=self._on_keyboard_event,
-                capture_hotkeys=self._settings.collection["capture_hotkeys"],
-            )
-            self._keyboard_hook.start()
 
     def toggle_privacy_mode(self, duration_minutes: float | None = None):
         """切换隐私模式：已开启则关闭，未开启则激活指定时长"""
@@ -502,6 +517,10 @@ class BlackboxEngine:
 
     def _on_keyboard_event(self, event: KeyEvent):
         """键盘事件"""
+        # 暂停标志检查
+        if self._keyboard_paused:
+            return
+
         # 隐私模式检查
         if self._privacy_filter.is_privacy_mode:
             return

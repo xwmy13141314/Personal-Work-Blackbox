@@ -27,17 +27,17 @@ from src.collector.keyboard_hook import (
     HC_ACTION,
     WM_IME_COMPOSITION,
     GCS_RESULTSTR,
-    _HAS_IMM,
+    _HAS_WIN_API,
 )
 
-# MSG 仅在 Windows（_HAS_IMM=True）下定义，条件导入以支持跨平台测试收集
-if _HAS_IMM:
+# MSG 仅在 Windows（_HAS_WIN_API=True）下定义，条件导入以支持跨平台测试收集
+if _HAS_WIN_API:
     from src.collector.keyboard_hook import MSG
 
 
 # ==================== IMEMessageHook 钩子回调测试 ====================
 
-@pytest.mark.skipif(not _HAS_IMM, reason="需要 Windows IMM / 消息钩子 API")
+@pytest.mark.skipif(not _HAS_WIN_API, reason="需要 Windows IMM / 消息钩子 API")
 class TestIMEMessageHookCallback:
     """IMEMessageHook._hook_callback 行为测试（mock Windows API）"""
 
@@ -115,7 +115,7 @@ class TestIMEMessageHookCallback:
 
 # ==================== IMEMessageHook 生命周期测试 ====================
 
-@pytest.mark.skipif(not _HAS_IMM, reason="需要 Windows IMM / 消息钩子 API")
+@pytest.mark.skipif(not _HAS_WIN_API, reason="需要 Windows IMM / 消息钩子 API")
 class TestIMEMessageHookLifecycle:
     """IMEMessageHook.start/stop 生命周期测试（mock Windows API）"""
 
