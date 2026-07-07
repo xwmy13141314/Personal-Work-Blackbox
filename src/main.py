@@ -254,7 +254,11 @@ class BlackboxEngine:
                 )
                 self._keyboard_hook.start()
                 logger.warning("键盘钩子在非主线程安装，可能无法接收回调")
+            elif not self._keyboard_hook.is_alive:
+                # 钩子存在但已停止，需要重新安装（必须在主线程）
+                logger.warning("键盘钩子已停止，需要重新安装（请在主线程调用 install_keyboard_hook）")
             # 已在主线程安装的钩子无需重复安装
+            self._keyboard_paused = False
 
         # 启动剪贴板监控
         if self._settings.collection["clipboard_enabled"]:
@@ -279,17 +283,16 @@ class BlackboxEngine:
             self._rest_api.start()
 
     def stop(self):
-        """停止采集引擎（保留数据库连接，支持后续报告生成）"""
+        """停止采集引擎（保留数据库连接和键盘钩子，支持后续报告生成）"""
         logger.info("正在停止 Personal Work Blackbox...")
         self._running = False
 
-        # 按逆序停止各组件
+        # 按逆序停止各组件（键盘钩子不停止，只设暂停标志）
+        self._keyboard_paused = True
         if self._idle_detector:
             self._idle_detector.stop()
         if self._clipboard_monitor:
             self._clipboard_monitor.stop()
-        if self._keyboard_hook:
-            self._keyboard_hook.stop()
         if self._window_tracker:
             self._window_tracker.stop()
 
@@ -318,9 +321,13 @@ class BlackboxEngine:
         logger.info("=== Personal Work Blackbox 已停止 ===")
 
     def shutdown(self):
-        """完全关闭引擎（含数据库），仅在应用退出时调用"""
+        """完全关闭引擎（含数据库和键盘钩子），仅在应用退出时调用"""
         if self._running:
             self.stop()
+        # 现在才卸载键盘钩子
+        if self._keyboard_hook:
+            self._keyboard_hook.stop()
+            self._keyboard_hook = None
         if self._rest_api:
             self._rest_api.stop()
         self._db.close()

@@ -35,11 +35,18 @@ def run_web():
 
     api = BlackboxAPI(engine)
 
+    # 关闭标志：防止 _on_closing 和 _auto_start 竞态
+    _shutting_down = False
+
     # 自动启动采集（3秒后，给 pywebview 窗口加载时间）
     import threading
     import time
     def _auto_start():
+        nonlocal _shutting_down
         time.sleep(3)
+        if _shutting_down:
+            logger.info("应用正在关闭，跳过自动启动")
+            return
         try:
             engine.start()
             api._is_paused = False
@@ -78,6 +85,9 @@ def run_web():
 
     # 窗口关闭时优雅释放引擎（含数据库）
     def _on_closing():
+        nonlocal _shutting_down
+        _shutting_down = True
+        logger.info("窗口关闭事件触发，开始关闭引擎")
         try:
             api.shutdown()
         except Exception:

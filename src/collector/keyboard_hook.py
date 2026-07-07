@@ -323,8 +323,10 @@ class IMEMessageHook:
             self._hook_proc = HOOKPROC(self._hook_callback)
             h_module = _kernel32.GetModuleHandleW(None)
             thread_id = _kernel32.GetCurrentThreadId()
+            # WH_GETMESSAGE 传 thread_id=0（全局）需要 DLL 注入，
+            # 传当前线程 ID 则只需模块句柄，避免 error 1428
             self._hook = _user32.SetWindowsHookExW(
-                WH_GETMESSAGE, self._hook_proc, h_module, 0,
+                WH_GETMESSAGE, self._hook_proc, h_module, thread_id,
             )
             if self._hook:
                 self._running = True
