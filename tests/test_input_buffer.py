@@ -5,15 +5,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from pynput import keyboard
 from src.processor.input_buffer import InputBuffer
 from src.collector.keyboard_hook import KeyEvent, KeyEventType
-
-from pynput import keyboard
 
 
 def _make_char_event(char: str) -> KeyEvent:
     """创建一个字符按键事件"""
-    return KeyEvent(KeyEventType.PRESS, key=keyboard.KeyCode.from_char(char), char=char)
+    return KeyEvent(KeyEventType.PRESS, key=char, char=char)
 
 
 def _make_key_event(key) -> KeyEvent:
@@ -272,7 +271,7 @@ class TestInputBufferIME:
     def test_ime_replaces_pinyin_letters(self):
         """测试 IME 组合文本替换拼音字母（核心去重逻辑）
 
-        用户输入 "jixu"（继续的拼音），pynput 逐字符捕获，
+        用户输入 "jixu"（继续的拼音），键盘钩子逐字符捕获，
         然后 IME 钩子发出 "继续"，缓冲区应自动移除 "jixu" 并保留 "继续"。
         """
         committed = []
@@ -343,7 +342,7 @@ class TestInputBufferIME:
         # Ctrl+A 全选
         buf.process_event(KeyEvent(
             KeyEventType.PRESS,
-            key=keyboard.KeyCode.from_char("a"),
+            key="a",
             char="\x01",
             ctrl_pressed=True,
         ))

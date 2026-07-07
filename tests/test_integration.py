@@ -17,6 +17,7 @@ from src.processor.input_buffer import InputBuffer
 from src.processor.privacy_filter import PrivacyFilter
 from src.processor.session_manager import SessionManager, Session
 from src.collector.keyboard_hook import KeyEvent, KeyEventType
+from pynput import keyboard
 
 
 # ==================== Fixtures ====================
@@ -234,7 +235,7 @@ class TestKeyboardToDatabase:
         for ch in "hello":
             event = KeyEvent(
                 event_type=KeyEventType.PRESS,
-                key=MagicMock(),
+                key=ch,
                 char=ch,
             )
             input_buffer.process_event(event)
@@ -242,11 +243,9 @@ class TestKeyboardToDatabase:
         # 模拟 Enter 提交
         enter_event = KeyEvent(
             event_type=KeyEventType.PRESS,
-            key=MagicMock(),
+            key=keyboard.Key.enter,
             char=None,
         )
-        from pynput import keyboard
-        enter_event.key = keyboard.Key.enter
         input_buffer.process_event(enter_event)
 
         assert len(captured_segments) == 1
@@ -265,7 +264,6 @@ class TestKeyboardToDatabase:
         input_buffer.process_event(ime_event)
 
         # 模拟 Enter 提交
-        from pynput import keyboard
         enter_event = KeyEvent(
             event_type=KeyEventType.PRESS,
             key=keyboard.Key.enter,
@@ -282,7 +280,7 @@ class TestKeyboardToDatabase:
         for ch in "hello ":
             event = KeyEvent(
                 event_type=KeyEventType.PRESS,
-                key=MagicMock(),
+                key=ch,
                 char=ch,
             )
             input_buffer.process_event(event)
@@ -297,7 +295,6 @@ class TestKeyboardToDatabase:
         input_buffer.process_event(ime_event)
 
         # 提交
-        from pynput import keyboard
         enter_event = KeyEvent(
             event_type=KeyEventType.PRESS,
             key=keyboard.Key.enter,

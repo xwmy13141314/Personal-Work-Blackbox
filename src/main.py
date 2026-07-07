@@ -163,17 +163,6 @@ class BlackboxEngine:
         self._clipboard_monitor: ClipboardMonitor | None = None
         self._idle_detector: IdleDetector | None = None
 
-        # 诊断：验证 pynput 键盘后端（打包后可能静默回退到 _dummy）
-        try:
-            from pynput import keyboard as _kb
-            _backend = _kb.Listener.__module__
-            if '_dummy' in _backend:
-                logger.error("pynput 键盘后端为 _dummy（空操作）！键盘事件将无法捕获")
-            else:
-                logger.info("pynput 键盘后端: %s", _backend)
-        except Exception:
-            logger.exception("pynput 后端检查失败")
-
         # 状态
         self._running = False
         self._stop_event = Event()
@@ -521,13 +510,28 @@ class BlackboxEngine:
         if self._window_tracker:
             ctx = self._window_tracker.current_context
             if self._privacy_filter.should_pause_recording(ctx.process_name, ctx.window_title):
+                # 诊断：首次被隐私过滤拦截
+                if not getattr(self, '_kb_filtered_logged', False):
+                    self._kb_filtered_logged = True
+                    logger.info("键盘事件被隐私过滤拦截: process=%s, title=%s",
+                                ctx.process_name, ctx.window_title)
                 return
+
+        # 诊断：首次到达引擎的键盘事件
+        if not getattr(self, '_kb_event_logged', False):
+            self._kb_event_logged = True
+            logger.info("引擎首次收到键盘事件: key=%s, char=%s", event.key, event.char)
 
         # 传递给输入缓冲区
         self._input_buffer.process_event(event)
 
     def _on_text_commit(self, text: str):
         """输入缓冲区提交回调"""
+        # 诊断：首次文本提交
+        if not getattr(self, '_text_commit_logged', False):
+            self._text_commit_logged = True
+            logger.info("引擎首次收到文本提交: text=%r", text[:50])
+
         # 隐私过滤
         context = ""
         if self._window_tracker:
@@ -634,6 +638,9 @@ class BlackboxEngine:
             )
             for seg in session.text_segments
         ]
+
+        logger.info("会话持久化: process=%s, segments=%d, active=%.0fs",
+                     session.process_name, len(seg_records), session.active_seconds)
 
         # 原子性批量插入（单事务）
         try:

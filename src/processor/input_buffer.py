@@ -11,8 +11,8 @@ import threading
 import time
 from typing import Callable
 
-from src.collector.keyboard_hook import KeyEvent, KeyEventType
 from pynput import keyboard
+from src.collector.keyboard_hook import KeyEvent, KeyEventType
 
 logger = logging.getLogger(__name__)
 
@@ -88,8 +88,8 @@ class InputBuffer:
                 self._commit()
                 return
 
-            # Backspace — 兼容 pynput 不同版本
-            if event.key == keyboard.Key.backspace:
+            # Backspace
+            if event.is_backspace:
                 self._on_backspace()
                 return
 
@@ -231,7 +231,6 @@ class InputBuffer:
 
     def _on_arrow(self, event: KeyEvent):
         """处理方向键（移动光标）"""
-        from pynput import keyboard
         if event.key == keyboard.Key.left:
             self._cursor_pos = max(0, self._cursor_pos - 1)
         elif event.key == keyboard.Key.right:

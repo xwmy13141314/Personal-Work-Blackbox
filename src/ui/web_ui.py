@@ -28,12 +28,26 @@ def run_web():
     if not config_path.exists():
         config_path = ensure_config()
 
-    # 引擎初始化但不自动启动采集（待用户点「启动」）
+    # 引擎初始化
     engine = BlackboxEngine(config_path)
 
     from src.ui.web_api import BlackboxAPI
 
     api = BlackboxAPI(engine)
+
+    # 自动启动采集（3秒后，给 pywebview 窗口加载时间）
+    import threading
+    import time
+    def _auto_start():
+        time.sleep(3)
+        try:
+            engine.start()
+            api._is_paused = False
+            api._recording_started_at = time.strftime("%Y-%m-%dT%H:%M:%S")
+            logger.info("采集已自动启动")
+        except Exception:
+            logger.exception("自动启动采集失败")
+    threading.Thread(target=_auto_start, daemon=True, name="AutoStart").start()
 
     # 前端产物路径（源码模式 = 项目根；打包模式 = sys._MEIPASS）
     index_path = get_bundled_root() / "web_frontend" / "index.html"

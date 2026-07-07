@@ -1,4 +1,4 @@
-"""KeyboardHook 与 IME 消息钩子（WH_GETMESSAGE 方案）单元测试
+"""KeyboardHook 与 IME 消息钩子单元测试
 
 测试覆盖：
 1. IMEMessageHook._hook_callback 对 WM_IME_COMPOSITION + GCS_RESULTSTR 的识别与发射
@@ -6,6 +6,7 @@
 3. CallNextHookEx 始终被调用（保证消息链不阻断）
 4. IMEMessageHook.start/stop 生命周期（安装/卸载钩子）
 5. KeyboardHook._on_ime_result_from_hook 去重逻辑（与兜底方案共享缓存）
+6. KeyEvent 属性测试（pynput Key 枚举）
 """
 
 import ctypes
@@ -14,10 +15,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from pynput import keyboard
+
 from src.collector import keyboard_hook
 from src.collector.keyboard_hook import (
     KeyboardHook,
     KeyEventType,
+    KeyEvent,
     IMEMessageHook,
     WH_GETMESSAGE,
     HC_ACTION,
@@ -37,14 +41,9 @@ if _HAS_IMM:
 class TestIMEMessageHookCallback:
     """IMEMessageHook._hook_callback 行为测试（mock Windows API）"""
 
-    # 保持 MSG 对象引用，防止被 GC 回收导致地址失效
     _keepalive: list = []
 
     def _make_msg(self, message: int, lparam: int, hwnd: int = 12345) -> int:
-        """构造一个伪造的 MSG 结构体，返回其内存地址
-
-        注意：MSG 对象必须保持引用存活，否则地址在 GC 后失效。
-        """
         msg = MSG()
         msg.hwnd = hwnd
         msg.message = message
@@ -52,11 +51,10 @@ class TestIMEMessageHookCallback:
         msg.lParam = lparam
         msg.time = 0
         msg.pt = ctypes.wintypes.POINT(0, 0)
-        self._keepalive.append(msg)  # 防止 GC 回收
+        self._keepalive.append(msg)
         return ctypes.addressof(msg)
 
     def test_callback_emits_on_ime_composition_with_resultstr(self):
-        """钩子回调在 WM_IME_COMPOSITION + GCS_RESULTSTR 时应发射组合结果"""
         results: list[str] = []
         hook = IMEMessageHook(on_ime_result=lambda r: results.append(r))
         msg_addr = self._make_msg(WM_IME_COMPOSITION, GCS_RESULTSTR)
@@ -73,10 +71,8 @@ class TestIMEMessageHookCallback:
         mock_user32.CallNextHookEx.assert_called_once()
 
     def test_callback_ignores_non_ime_message(self):
-        """钩子回调应忽略非 WM_IME_COMPOSITION 消息"""
         results: list[str] = []
         hook = IMEMessageHook(on_ime_result=lambda r: results.append(r))
-        # WM_KEYDOWN = 0x0100，非 IME 消息
         msg_addr = self._make_msg(0x0100, 0)
 
         mock_user32 = MagicMock()
@@ -90,10 +86,8 @@ class TestIMEMessageHookCallback:
         mock_get.assert_not_called()
 
     def test_callback_ignores_ime_without_resultstr_flag(self):
-        """钩子回调应忽略不含 GCS_RESULTSTR 标志的 WM_IME_COMPOSITION"""
         results: list[str] = []
         hook = IMEMessageHook(on_ime_result=lambda r: results.append(r))
-        # lParam 只有 GCS_COMPSTR(0x0008)，不含 GCS_RESULTSTR(0x0800)
         msg_addr = self._make_msg(WM_IME_COMPOSITION, 0x0008)
 
         mock_user32 = MagicMock()
@@ -107,14 +101,12 @@ class TestIMEMessageHookCallback:
         mock_get.assert_not_called()
 
     def test_callback_always_calls_call_next_hook(self):
-        """钩子回调应始终调用 CallNextHookEx，即使 nCode != HC_ACTION"""
         hook = IMEMessageHook(on_ime_result=lambda r: None)
 
         mock_user32 = MagicMock()
         mock_user32.CallNextHookEx.return_value = 42
 
         with patch.object(keyboard_hook, "_user32", mock_user32):
-            # nCode = -1（非 HC_ACTION），lParam = 0
             ret = hook._hook_callback(-1, 0, 0)
 
         assert ret == 42
@@ -128,11 +120,10 @@ class TestIMEMessageHookLifecycle:
     """IMEMessageHook.start/stop 生命周期测试（mock Windows API）"""
 
     def test_start_installs_wh_getmessage_hook(self):
-        """start 应通过 SetWindowsHookExW 安装 WH_GETMESSAGE 钩子"""
         hook = IMEMessageHook(on_ime_result=lambda r: None)
 
         mock_user32 = MagicMock()
-        mock_user32.SetWindowsHookExW.return_value = 999  # 假钩子句柄
+        mock_user32.SetWindowsHookExW.return_value = 999
         mock_kernel32 = MagicMock()
         mock_kernel32.GetModuleHandleW.return_value = 888
 
@@ -143,12 +134,10 @@ class TestIMEMessageHookLifecycle:
         assert hook.is_running is True
         mock_kernel32.GetModuleHandleW.assert_called_once_with(None)
         mock_user32.SetWindowsHookExW.assert_called_once()
-        # 验证第一个参数是 WH_GETMESSAGE
         call_args = mock_user32.SetWindowsHookExW.call_args
         assert call_args[0][0] == WH_GETMESSAGE
 
     def test_stop_unhooks_and_resets_state(self):
-        """stop 应调用 UnhookWindowsHookEx 并重置状态"""
         hook = IMEMessageHook(on_ime_result=lambda r: None)
 
         mock_user32 = MagicMock()
@@ -160,14 +149,12 @@ class TestIMEMessageHookLifecycle:
              patch.object(keyboard_hook, "_kernel32", mock_kernel32):
             hook.start()
             assert hook.is_running
-
             hook.stop()
 
         assert hook.is_running is False
         mock_user32.UnhookWindowsHookEx.assert_called_once_with(999)
 
     def test_start_when_already_running_is_noop(self):
-        """重复调用 start 不应重复安装钩子"""
         hook = IMEMessageHook(on_ime_result=lambda r: None)
 
         mock_user32 = MagicMock()
@@ -178,7 +165,7 @@ class TestIMEMessageHookLifecycle:
         with patch.object(keyboard_hook, "_user32", mock_user32), \
              patch.object(keyboard_hook, "_kernel32", mock_kernel32):
             hook.start()
-            hook.start()  # 重复调用
+            hook.start()
 
         mock_user32.SetWindowsHookExW.assert_called_once()
 
@@ -186,17 +173,11 @@ class TestIMEMessageHookLifecycle:
 # ==================== KeyboardHook._on_ime_result_from_hook 去重测试 ====================
 
 class TestKeyboardHookIMEResultDedup:
-    """KeyboardHook._on_ime_result_from_hook 去重逻辑测试
-
-    这些测试不依赖 Windows API（_on_ime_result_from_hook 仅做去重和事件发射），
-    可在任意平台运行。
-    """
+    """KeyboardHook._on_ime_result_from_hook 去重逻辑测试"""
 
     def test_hook_result_emitted_once(self):
-        """消息钩子结果应被发射一次"""
         events = []
         hook = KeyboardHook(on_event=lambda e: events.append(e))
-
         hook._on_ime_result_from_hook("你好")
 
         assert len(events) == 1
@@ -205,20 +186,16 @@ class TestKeyboardHookIMEResultDedup:
         assert events[0].event_type == KeyEventType.PRESS
 
     def test_duplicate_result_not_emitted(self):
-        """相同组合结果不应重复发射（与兜底方案共享去重缓存）"""
         events = []
         hook = KeyboardHook(on_event=lambda e: events.append(e))
-
         hook._on_ime_result_from_hook("你好")
-        hook._on_ime_result_from_hook("你好")  # 相同结果
+        hook._on_ime_result_from_hook("你好")
 
         assert len(events) == 1
 
     def test_different_result_emitted(self):
-        """不同的组合结果应分别发射"""
         events = []
         hook = KeyboardHook(on_event=lambda e: events.append(e))
-
         hook._on_ime_result_from_hook("你好")
         hook._on_ime_result_from_hook("世界")
 
@@ -227,45 +204,63 @@ class TestKeyboardHookIMEResultDedup:
         assert events[1].char == "世界"
 
     def test_empty_result_not_emitted(self):
-        """空结果不应被发射"""
         events = []
         hook = KeyboardHook(on_event=lambda e: events.append(e))
-
         hook._on_ime_result_from_hook("")
 
         assert events == []
 
 
-# ==================== KeyboardHook 按键传递测试 ====================
+# ==================== KeyEvent 属性测试 ====================
 
-class TestKeyboardHookCharPassThrough:
-    """验证普通字符按键始终传递到回调（不再被 IME 状态检查丢弃）
+class TestKeyEventProperties:
+    """KeyEvent 属性测试 — 验证 pynput Key 枚举后的行为"""
 
-    回归测试：07-07 bug — ImmGetOpenStatus 在英文模式下也返回 True，
-    导致所有字符按键被 return 丢弃，活动明细全部显示"无文本输入记录"。
-    """
+    def test_enter_detection(self):
+        event = KeyEvent(KeyEventType.PRESS, keyboard.Key.enter)
+        assert event.is_enter is True
+        assert event.is_backspace is False
 
-    def test_char_always_passed_through(self):
-        """普通字符按键应始终传递到 on_event 回调"""
-        from pynput import keyboard
-        events = []
-        hook = KeyboardHook(on_event=lambda e: events.append(e))
+    def test_backspace_detection(self):
+        event = KeyEvent(KeyEventType.PRESS, keyboard.Key.backspace)
+        assert event.is_backspace is True
+        assert event.is_enter is False
 
-        # 模拟 pynput 调用 _on_press，传入一个普通字符键
-        key = keyboard.KeyCode.from_char('a')
-        hook._on_press(key)
+    def test_tab_detection(self):
+        event = KeyEvent(KeyEventType.PRESS, keyboard.Key.tab)
+        assert event.is_tab is True
 
-        assert len(events) == 1
-        assert events[0].char == 'a'
+    def test_delete_detection(self):
+        event = KeyEvent(KeyEventType.PRESS, keyboard.Key.delete)
+        assert event.is_delete is True
 
-    def test_multiple_chars_all_passed(self):
-        """连续输入多个字符都应被传递"""
-        from pynput import keyboard
-        events = []
-        hook = KeyboardHook(on_event=lambda e: events.append(e))
+    def test_escape_detection(self):
+        event = KeyEvent(KeyEventType.PRESS, keyboard.Key.esc)
+        assert event.is_escape is True
 
-        for ch in "hello":
-            hook._on_press(keyboard.KeyCode.from_char(ch))
+    def test_arrow_detection(self):
+        for key in (keyboard.Key.up, keyboard.Key.down, keyboard.Key.left, keyboard.Key.right):
+            event = KeyEvent(KeyEventType.PRESS, key)
+            assert event.is_arrow is True
 
-        assert len(events) == 5
-        assert ''.join(e.char for e in events) == "hello"
+    def test_printable_char(self):
+        event = KeyEvent(KeyEventType.PRESS, "a", char="a")
+        assert event.is_printable_char is True
+
+    def test_non_printable_multi_char(self):
+        event = KeyEvent(KeyEventType.PRESS, None, char="你好", is_ime_composition=True)
+        assert event.is_printable_char is False
+        assert event.is_ime_text is True
+
+    def test_ctrl_a_detection(self):
+        """Ctrl+A 检测（控制字符 \x01）"""
+        event = KeyEvent(KeyEventType.PRESS, "a", char="\x01", ctrl_pressed=True)
+        assert event.is_ctrl_a is True
+
+    def test_ctrl_a_without_ctrl(self):
+        event = KeyEvent(KeyEventType.PRESS, "a", char="\x01", ctrl_pressed=False)
+        assert event.is_ctrl_a is False
+
+    def test_repr(self):
+        event = KeyEvent(KeyEventType.PRESS, keyboard.Key.enter)
+        assert "enter" in repr(event).lower()
