@@ -215,29 +215,43 @@ _ALT_VKS = {VK_MENU, VK_LMENU, VK_RMENU}
 _SHIFT_VKS = {VK_SHIFT, VK_LSHIFT, VK_RSHIFT}
 
 
-def _vk_to_char(vk: int) -> str | None:
-    """将虚拟键码转换为字符（使用 ToUnicodeEx）"""
+def _vk_to_char(vk: int, shift_pressed: bool = False) -> str | None:
+    """将虚拟键码转换为字符
+
+    不依赖 GetKeyboardState（钩子线程的键盘状态全为零，不可用）。
+    改用硬编码映射 + MapVirtualKeyW，shift 状态由调用方传入。
+    """
     if not _HAS_WIN_API:
         return None
-    try:
-        kb_state = (ctypes.c_uint8 * 256)()
-        _user32.GetKeyboardState(kb_state)
 
-        thread_id = _kernel32.GetCurrentThreadId()
-        hkl = _user32.GetKeyboardLayout(thread_id)
+    # 字母键 A-Z (vk 0x41-0x5A)
+    if 0x41 <= vk <= 0x5A:
+        if shift_pressed:
+            return chr(vk)  # 大写 A-Z
+        return chr(vk + 32)  # 小写 a-z
 
-        scan_code = _user32.MapVirtualKeyW(vk, 0)  # MAPVK_VK_TO_VSC
+    # 数字键 0-9 (vk 0x30-0x39)
+    if 0x30 <= vk <= 0x39:
+        if shift_pressed:
+            shift_digits = ")!@#$%^&*("
+            return shift_digits[vk - 0x30]
+        return chr(vk)
 
-        buf = (ctypes.wintypes.WCHAR * 16)()
-        result = _user32.ToUnicodeEx(vk, scan_code, kb_state, buf, 16, 0, hkl)
+    # 空格
+    if vk == VK_SPACE:
+        return " "
 
-        if result > 0:
-            char = buf[0]
-            if char and char.isprintable():
-                return char
-        return None
-    except Exception:
-        return None
+    # OEM 键 — 使用 MapVirtualKeyW(MAPVK_VK_TO_CHAR)
+    # MapVirtualKeyW 返回的是不按 shift 时的字符（小写形式）
+    char_code = _user32.MapVirtualKeyW(vk, 2)  # MAPVK_VK_TO_CHAR
+    if char_code and char_code < 0x10000:
+        char = chr(char_code)
+        if char and char.isprintable():
+            # 如果按了 shift 且字符是小写字母，转大写
+            if shift_pressed and char.isalpha():
+                return char.upper()
+            return char
+    return None
 
 
 # ==================== 事件类型 ====================
@@ -536,7 +550,7 @@ class KeyboardHook:
             return
 
         # 普通字符键 — 转换为字符
-        char = _vk_to_char(vk)
+        char = _vk_to_char(vk, shift_pressed=self._shift_pressed)
         if char:
             key = keyboard.KeyCode(char=char)
             event = KeyEvent(
@@ -544,10 +558,15 @@ class KeyboardHook:
                 ctrl_pressed=self._ctrl_pressed,
             )
             self._on_event(event)
+            # 诊断：前10个字符转换日志
+            if self._event_count <= 10:
+                logger.info("按键转换: vk=0x%02X → char=%r (shift=%s)",
+                            vk, char, self._shift_pressed)
         else:
-            # 诊断：记录无法转换的按键
-            if self._event_count <= 20:
-                logger.debug("按键 vk=0x%02X 无法转换为字符", vk)
+            # 诊断：前10个无法转换的按键
+            if self._event_count <= 10:
+                logger.info("按键无法转换: vk=0x%02X (shift=%s)",
+                            vk, self._shift_pressed)
 
     def _process_keyup(self, vk: int):
         """处理按键释放"""

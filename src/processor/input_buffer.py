@@ -73,6 +73,11 @@ class InputBuffer:
         with self._lock:
             self._last_activity_time = time.time()
 
+            # 诊断：首次收到字符事件
+            if not getattr(self, '_first_char_logged', False) and event.char and event.is_printable_char:
+                self._first_char_logged = True
+                logger.info("InputBuffer 首次收到字符: %r", event.char)
+
             # IME 组合文本 — 将整段组合文本作为一个片段处理（不逐字符追加）
             if getattr(event, 'is_ime_composition', False) and event.char:
                 self._on_ime_text(event.char)
@@ -247,7 +252,10 @@ class InputBuffer:
         """提交当前缓冲区内容"""
         text = "".join(self._buffer).strip()
         if text:
+            logger.info("InputBuffer 提交文本: %r (len=%d)", text[:50], len(text))
             self._on_commit(text)
+        else:
+            logger.debug("InputBuffer 提交空缓冲区，跳过")
         self._buffer.clear()
         self._cursor_pos = 0
         self._select_all = False
