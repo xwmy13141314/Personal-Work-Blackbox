@@ -519,7 +519,9 @@ class KeyboardHook:
             self._shift_pressed = True
             return
 
-        # Enter/Space/Tab/Backspace 可能确认 IME 候选词
+        # IME 确认键：Enter/Space/Tab/Backspace 可能确认了 IME 候选词
+        # 直接从前台窗口的 IME 上下文获取组合结果
+        # （WH_GETMESSAGE 钩子无法收到其他线程的 IME 消息，只能主动轮询）
         if vk in (VK_RETURN, VK_SPACE, VK_TAB, VK_BACK, VK_DELETE):
             self._check_and_emit_ime_result()
 
@@ -542,6 +544,10 @@ class KeyboardHook:
                 ctrl_pressed=self._ctrl_pressed,
             )
             self._on_event(event)
+        else:
+            # 诊断：记录无法转换的按键
+            if self._event_count <= 20:
+                logger.debug("按键 vk=0x%02X 无法转换为字符", vk)
 
     def _process_keyup(self, vk: int):
         """处理按键释放"""
@@ -559,6 +565,8 @@ class KeyboardHook:
             if not hwnd:
                 return
             result = _get_ime_result_string(hwnd)
+            if result:
+                logger.info("IME 结果检测到: %r", result[:30])
             self._on_ime_result_from_hook(result)
         except Exception:
             pass
@@ -569,6 +577,7 @@ class KeyboardHook:
             return
         if result != self._last_ime_result:
             self._last_ime_result = result
+            logger.info("IME 文本已发射: %r", result[:30])
             event = KeyEvent(
                 KeyEventType.PRESS, key=None, char=result,
                 is_ime_composition=True,
