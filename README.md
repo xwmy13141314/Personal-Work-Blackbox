@@ -14,13 +14,14 @@
 - **三层采集**：输入活动 + 窗口切换 + 剪贴板
 - **AI 报告**：日报 / 周报 / 月报，支持任意 OpenAI 兼容模型（智谱 GLM、阿里通义、DeepSeek、Kimi、OpenAI、自定义）
 - **Web GUI**：macOS 风格三栏界面（pywebview + React），Windows 原生窗口
-- **四视图导航**：报告 / 统计 / 活动明细 / 设置
+- **五视图导航**：报告 / 统计 / 活动明细 / 设置 / 关于
 - **常驻日历**：标记有采集（蓝点）与有日报（底色）的日期，周 / 月切换
 - **全文搜索**：检索历史输入记录，按日期 / 应用定位
 - **应用分类**：10 类自动分类（开发/浏览器/通讯/办公/设计/娱乐/系统/数据库/AI），含分类统计
 - **专注模式**：娱乐应用检测提醒 + 专注会话 + 每日效率目标
 - **数据导出**：CSV / JSON 格式导出，支持 Excel 兼容编码
 - **REST API**：本地 HTTP 接口（127.0.0.1:19527），供第三方工具集成
+- **键盘捕获引擎**：ctypes 直接调用 Windows API（WH_KEYBOARD_LL），专用线程 + 独立消息泵，不依赖第三方库，支持 PyInstaller 打包环境
 - **IME 中文捕获**：智能识别中文输入法组合文本，记录汉字而非拼音
 - **隐私保护**：首次启动告知弹窗 + 三层过滤 + 一键隐私模式 + 可选数据库加密（SQLCipher）
 - **国产模型友好**：设置页下拉预设，填 Key 即用
@@ -186,9 +187,9 @@ pyinstaller --noconfirm blackbox.spec
 src/
 ├── main.py              # 主入口 / BlackboxEngine
 ├── collector/           # 输入 / 窗口 / 剪贴板 / 空闲采集
-│   └── keyboard_hook.py # 含 IME 中文捕获
+│   └── keyboard_hook.py # 键盘捕获引擎（ctypes WH_KEYBOARD_LL + 专用线程消息泵）
 ├── processor/           # 输入缓冲 / 隐私过滤 / 会话管理
-│   ├── input_buffer.py  # 含 IME 文本处理
+│   ├── input_buffer.py  # 含 IME 文本处理 + 智能去重
 │   ├── privacy_filter.py
 │   ├── session_manager.py
 │   ├── app_classifier.py # 应用自动分类（10 类）
@@ -199,13 +200,13 @@ src/
 │   └── data_exporter.py # CSV/JSON 数据导出
 ├── ai/                  # LLM 客户端 / 提示词 / 报告生成
 ├── ui/                  # web_ui / web_api / rest_api
-│   ├── web_ui.py        # pywebview 窗口
+│   ├── web_ui.py        # pywebview 窗口 + 自动启动采集
 │   ├── web_api.py       # JS 桥接 API
 │   ├── rest_api.py      # 本地 REST API 服务器
 │   └── notification.py  # 系统通知
 └── config/              # 配置管理
 界面优化/优化图设计为macOS风格/   # React 前端源码
-├── src/app/components/  # Sidebar / StatsView / ActivityView / SettingsView / PrivacyConsent
+├── src/app/components/  # Sidebar / StatsView / ActivityView / SettingsView / AboutView / PrivacyConsent
 ├── src/app/lib/utils.tsx # 共享工具与组件
 ├── src/styles/theme.css  # CSS 变量主题
 web_frontend/                    # 前端构建产物（打包输入）
@@ -228,6 +229,27 @@ PYTHONPATH=src python3 -m personal_recorder build-day --date 2026-07-03
 ## 更新日志
 
 详见 `CHANGELOG.md`。
+
+### v4.1.0 (2026-07-08) — 键盘捕获引擎重构 + 关于页面
+
+#### 键盘捕获引擎彻底重构
+- 抛弃 pynput.Listener，改用 ctypes 直接调用 Windows API（WH_KEYBOARD_LL）
+- 专用线程 + 独立消息泵（GetMessageW 循环），不依赖 pywebview 主线程
+- 64 位类型修复：LRESULT/WPARAM/LPARAM 使用 c_ssize_t/c_size_t
+- 虚拟键码→字符：硬编码映射 + MapVirtualKeyW，不依赖 GetKeyboardState
+- IME 中文捕获：WH_GETMESSAGE 钩子 + 主动轮询 ImmGetCompositionStringW
+- 钩子生命周期：stop() 不卸载钩子，仅设暂停标志；shutdown() 才卸载
+- 全链路诊断日志：首次按键/字符转换/文本提交/会话持久化
+
+#### 新增「关于」页面
+- 五视图导航：报告 / 统计 / 活动 / 设置 / 关于
+- 版本信息 + 隐私承诺 + 联系方式（邮箱 + GitHub）
+
+#### 其他改进
+- 自动启动采集（3秒延迟，pywebview 窗口加载后）
+- 竞态条件修复：_on_closing 与 _auto_start 线程协调
+- markdown_exporter zlib.error 修复
+- 测试适配：244 passed
 
 ### v4.0.0 (2026-07-06) — 品牌重定位 + 发布红线 + 功能增强
 

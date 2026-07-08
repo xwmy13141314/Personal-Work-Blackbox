@@ -16,7 +16,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_APP_VERSION = "4.0.0"
+_APP_VERSION = "4.1.0"
 
 
 class BlackboxAPI:

@@ -1,5 +1,71 @@
 # Changelog
 
+## v4.1.0 - 2026-07-08 — 键盘捕获引擎重构 + 关于页面
+
+### 键盘捕获引擎彻底重构（核心修复）
+
+经过 6 轮迭代调试，彻底解决了 PyInstaller 打包环境下键盘事件无法捕获的问题。
+
+#### 问题根因链
+1. `ImmGetOpenStatus()` 在英文模式下也返回 True，丢弃所有按键
+2. pynput 在打包 exe 中静默回退到 `_dummy` 后端
+3. pynput.Listener 线程消息泵在 pywebview 环境下不工作
+4. WH_KEYBOARD_LL 安装在 pywebview 主线程，但主线程没有标准 Win32 消息泵
+5. WH_GETMESSAGE 钩子传 thread_id=0 导致 error 1428（需要 DLL 注入）
+6. `GetKeyboardState()` 在钩子线程返回全零，`ToUnicodeEx` 无法转换字符
+
+#### 最终方案
+- **ctypes 直接调用**：抛弃 pynput.Listener，使用 `SetWindowsHookExW(WH_KEYBOARD_LL)` 直接安装钩子
+- **专用线程 + 独立消息泵**：创建 KbHookThread 线程，运行 `GetMessageW` 循环处理回调，不依赖 pywebview 主线程
+- **64 位类型修复**：`LRESULT`/`WPARAM`/`LPARAM` 使用 `c_ssize_t`/`c_size_t`（ctypes.wintypes 错误地定义为 32 位）
+- **硬编码字符映射**：字母键 A-Z 和数字键 0-9 使用硬编码映射 + `MapVirtualKeyW(MAPVK_VK_TO_CHAR)`，不依赖 `GetKeyboardState`
+- **shift 状态自跟踪**：_process_keydown 中自行维护 shift 按下状态，传入 _vk_to_char
+- **IME 主动轮询**：WH_GETMESSAGE 钩子 + 在确认键（Enter/Space等）触发时主动调用 `ImmGetCompositionStringW` 获取组合结果
+- **优雅停止**：`PostThreadMessageW(WM_QUIT)` 通知钩子线程退出消息泵
+
+#### 钩子生命周期改进
+- `engine.stop()` 不再卸载键盘钩子，仅设 `_keyboard_paused` 标志
+- 只有 `engine.shutdown()`（应用退出）才卸载钩子
+- 解决 stop() 后 start() 钩子已卸载无法重新安装的问题
+
+#### 全链路诊断日志
+- `首次按键事件已收到: vk=0xXX` — 钩子捕获到首个按键
+- `按键转换: vk=0xXX → char='x'` — 虚拟键码转字符成功
+- `引擎首次收到键盘事件` — 事件到达引擎
+- `InputBuffer 首次收到字符` — 字符到达缓冲区
+- `InputBuffer 提交文本: 'text' (len=N)` — 文本片段提交
+- `引擎首次收到文本提交` — 引擎收到文本
+- `会话持久化: segments=N` — 片段写入数据库
+
+### 新增「关于」页面
+
+- 五视图导航：报告 / 统计 / 活动 / 设置 / 关于
+- AboutView.tsx 组件：版本信息 (v4.1.0) + 隐私承诺 + 联系方式（邮箱 xwmy134@gmail.com + GitHub 链接）+ 技术栈
+- utils.tsx 新增 'about' 到 ViewKey 和 navItems
+- App.tsx 新增 AboutView 路由
+
+### 其他改进
+
+- **自动启动采集**：web_ui.py 中 pywebview 窗口加载 3 秒后自动启动引擎
+- **竞态条件修复**：_on_closing 与 _auto_start 线程通过 _shutting_down 标志协调
+- **pynput 打包修复**：blackbox.spec 添加 `collect_submodules('pynput')` + 7 个显式 hiddenimports
+- **InputBuffer 智能去重**：IME 组合文本到达时自动移除缓冲区中残留的拼音字母
+- **测试适配**：244 passed（keyboard_hook 15 + input_buffer 29 + integration 12 + 其他）
+
+### 技术细节
+
+#### 修改文件
+- `src/collector/keyboard_hook.py` — 完全重写（ctypes WH_KEYBOARD_LL + 专用线程）
+- `src/processor/input_buffer.py` — 适配新 KeyEvent + 诊断日志
+- `src/main.py` — 钩子生命周期分离 + 诊断日志
+- `src/ui/web_ui.py` — 自动启动 + 竞态条件修复
+- `src/ui/web_api.py` — 版本号更新
+- `blackbox.spec` — pynput hiddenimports
+- `tests/test_keyboard_hook.py` — 适配新 API
+- `tests/test_input_buffer.py` — 适配 pynput Key
+- `tests/test_integration.py` — 适配 pynput Key
+- 前端：AboutView.tsx（新增）、utils.tsx、App.tsx
+
 ## v4.0.0 - 2026-07-06 — 品牌重定位 + 发布红线 + 功能增强
 
 ### 第一期：发布前红线与核心体验修复
