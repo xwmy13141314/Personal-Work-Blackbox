@@ -1,10 +1,11 @@
 """输入活动监听器 — 直接使用 Windows API 的低级键盘钩子
 
-在调用线程上安装 WH_KEYBOARD_LL 和 WH_GETMESSAGE 钩子，
-由该线程的消息泵（如 pywebview 主循环）处理回调。
+使用专用线程 + 独立消息泵（GetMessageW 循环）安装 WH_KEYBOARD_LL，
+不依赖 pywebview 的主线程消息循环。
 
-这解决了 pynput Listener 在 PyInstaller 打包 + pywebview 环境下
-监听器线程消息泵不工作的问题。
+WH_KEYBOARD_LL 要求安装线程必须有标准 Win32 消息泵（GetMessageW/
+DispatchMessageW），但 pywebview 主线程使用自己的事件循环，
+不处理钩子回调。因此必须在专用线程中安装钩子并运行消息泵。
 """
 
 from __future__ import annotations
@@ -12,13 +13,22 @@ from __future__ import annotations
 import ctypes
 import ctypes.wintypes
 import logging
+import threading
 import time
 from enum import Enum, auto
 from typing import Callable
 
-from pynput import keyboard  # 仅用于 Key 枚举比较，不使用 Listener
+from pynput import keyboard  # 仅用于 Key 枚举比较
 
 logger = logging.getLogger(__name__)
+
+# ==================== 64 位正确的 Windows 类型 ====================
+# ctypes.wintypes 把 WPARAM/LPARAM 定义为 32 位，但在 64 位 Windows 上
+# 它们是指针大小（64 位）。使用 c_ssize_t/c_size_t 确保正确。
+
+_LRESULT = ctypes.c_ssize_t   # LONG_PTR
+_WPARAM = ctypes.c_size_t     # UINT_PTR
+_LPARAM = ctypes.c_ssize_t    # LONG_PTR
 
 # ==================== Windows API 常量 ====================
 
@@ -30,6 +40,7 @@ WM_KEYDOWN = 0x0100
 WM_SYSKEYDOWN = 0x0104
 WM_KEYUP = 0x0101
 WM_SYSKEYUP = 0x0105
+WM_QUIT = 0x0012
 
 WM_IME_COMPOSITION = 0x010F
 GCS_RESULTSTR = 0x0800
@@ -67,16 +78,40 @@ try:
     _kernel32 = ctypes.windll.kernel32
     _imm32 = ctypes.windll.imm32
 
+    # SetWindowsHookExW
     _user32.SetWindowsHookExW.restype = ctypes.wintypes.HHOOK
     _user32.SetWindowsHookExW.argtypes = [
         ctypes.c_int, ctypes.c_void_p, ctypes.wintypes.HINSTANCE, ctypes.wintypes.DWORD,
     ]
+    # UnhookWindowsHookEx
     _user32.UnhookWindowsHookEx.restype = ctypes.wintypes.BOOL
     _user32.UnhookWindowsHookEx.argtypes = [ctypes.wintypes.HHOOK]
-    _user32.CallNextHookEx.restype = ctypes.c_long
+    # CallNextHookEx — 返回值 LRESULT 是 64 位
+    _user32.CallNextHookEx.restype = _LRESULT
     _user32.CallNextHookEx.argtypes = [
-        ctypes.wintypes.HHOOK, ctypes.c_int, ctypes.wintypes.WPARAM, ctypes.wintypes.LPARAM,
+        ctypes.wintypes.HHOOK, ctypes.c_int, _WPARAM, _LPARAM,
     ]
+    # GetMessageW — 消息泵核心
+    _user32.GetMessageW.restype = ctypes.wintypes.BOOL
+    _user32.GetMessageW.argtypes = [
+        ctypes.POINTER(ctypes.wintypes.MSG), ctypes.wintypes.HWND,
+        ctypes.wintypes.UINT, ctypes.wintypes.UINT,
+    ]
+    # PeekMessageW
+    _user32.PeekMessageW.restype = ctypes.wintypes.BOOL
+    _user32.PeekMessageW.argtypes = [
+        ctypes.POINTER(ctypes.wintypes.MSG), ctypes.wintypes.HWND,
+        ctypes.wintypes.UINT, ctypes.wintypes.UINT, ctypes.wintypes.UINT,
+    ]
+    # DispatchMessageW
+    _user32.DispatchMessageW.restype = ctypes.c_long  # LRESULT 但标准调用
+    _user32.DispatchMessageW.argtypes = [ctypes.POINTER(ctypes.wintypes.MSG)]
+    # PostThreadMessageW — 向指定线程发消息（用于停止消息泵）
+    _user32.PostThreadMessageW.restype = ctypes.wintypes.BOOL
+    _user32.PostThreadMessageW.argtypes = [
+        ctypes.wintypes.DWORD, ctypes.wintypes.UINT, _WPARAM, _LPARAM,
+    ]
+
     _kernel32.GetModuleHandleW.restype = ctypes.wintypes.HMODULE
     _kernel32.GetModuleHandleW.argtypes = [ctypes.wintypes.LPCWSTR]
     _kernel32.GetCurrentThreadId.restype = ctypes.wintypes.DWORD
@@ -114,19 +149,10 @@ try:
         ctypes.c_void_p, ctypes.wintypes.DWORD, ctypes.c_void_p, ctypes.wintypes.DWORD,
     ]
 
+    # HOOKPROC — 返回值 LRESULT 是 64 位
     HOOKPROC = ctypes.WINFUNCTYPE(
-        ctypes.c_long, ctypes.c_int, ctypes.wintypes.WPARAM, ctypes.wintypes.LPARAM,
+        _LRESULT, ctypes.c_int, _WPARAM, _LPARAM,
     )
-
-    class MSG(ctypes.Structure):
-        _fields_ = [
-            ("hwnd", ctypes.wintypes.HWND),
-            ("message", ctypes.wintypes.UINT),
-            ("wParam", ctypes.wintypes.WPARAM),
-            ("lParam", ctypes.wintypes.LPARAM),
-            ("time", ctypes.wintypes.DWORD),
-            ("pt", ctypes.wintypes.POINT),
-        ]
 
     class KBDLLHOOKSTRUCT(ctypes.Structure):
         _fields_ = [
@@ -298,84 +324,21 @@ class KeyEvent:
         return f"KeyEvent({self.event_type.name}, key={self.key}{char_info}{ime_info})"
 
 
-# ==================== IME 消息钩子 ====================
-
-class IMEMessageHook:
-    """IME 消息钩子（WH_GETMESSAGE 拦截 WM_IME_COMPOSITION）
-
-    在调用线程上安装钩子，由该线程的消息泵处理回调。
-    必须在有消息泵的线程上调用 start()。
-    """
-
-    def __init__(self, on_ime_result: Callable[[str], None]):
-        self._on_ime_result = on_ime_result
-        self._hook = None
-        self._hook_proc = None  # 保持引用防止 GC
-        self._running = False
-
-    def start(self):
-        if self._hook:
-            return
-        if not _HAS_WIN_API:
-            logger.error("Windows API 不可用，IME 钩子无法安装")
-            return
-        try:
-            self._hook_proc = HOOKPROC(self._hook_callback)
-            h_module = _kernel32.GetModuleHandleW(None)
-            thread_id = _kernel32.GetCurrentThreadId()
-            # WH_GETMESSAGE 传 thread_id=0（全局）需要 DLL 注入，
-            # 传当前线程 ID 则只需模块句柄，避免 error 1428
-            self._hook = _user32.SetWindowsHookExW(
-                WH_GETMESSAGE, self._hook_proc, h_module, thread_id,
-            )
-            if self._hook:
-                self._running = True
-                logger.info("IME 消息钩子已安装 (WH_GETMESSAGE, thread_id=%d)", thread_id)
-            else:
-                err = _kernel32.GetLastError()
-                logger.error("IME 消息钩子安装失败 (error=%d)", err)
-        except Exception:
-            logger.exception("IME 消息钩子启动异常")
-
-    def stop(self):
-        if self._hook:
-            try:
-                _user32.UnhookWindowsHookEx(self._hook)
-                logger.info("IME 消息钩子已卸载")
-            except Exception:
-                logger.exception("IME 消息钩子卸载异常")
-            self._hook = None
-            self._running = False
-
-    def _hook_callback(self, nCode, wParam, lParam):
-        if nCode == HC_ACTION and lParam:
-            try:
-                msg = MSG.from_address(lParam)
-                if msg.message == WM_IME_COMPOSITION:
-                    if msg.lParam & GCS_RESULTSTR:
-                        result = _get_ime_result_string(msg.hwnd)
-                        if result:
-                            self._on_ime_result(result)
-            except Exception:
-                logger.debug("IME 消息钩子回调异常", exc_info=True)
-        return _user32.CallNextHookEx(self._hook, nCode, wParam, lParam)
-
-    @property
-    def is_running(self) -> bool:
-        return self._running
-
-
-# ==================== 键盘监听器 ====================
+# ==================== 键盘监听器（专用线程 + 独立消息泵）====================
 
 class KeyboardHook:
-    """键盘监听器 — 直接使用 Windows API WH_KEYBOARD_LL
+    """键盘监听器 — 专用线程 + 独立消息泵
 
-    在调用线程上安装钩子，由该线程的消息泵处理回调。
-    必须在有消息泵的线程上调用 start()（如 pywebview 主线程）。
+    创建一个专用线程，在该线程上安装 WH_KEYBOARD_LL 钩子并运行
+    GetMessageW 消息泵。这样钩子回调由专用线程的消息泵处理，
+    不依赖 pywebview 主线程的消息循环。
 
-    不再使用 pynput.Listener，因为它在 PyInstaller 打包 + pywebview
-    环境下创建的监听器线程消息泵不工作，导致回调永远不触发。
+    stop() 通过 PostThreadMessageW 发送 WM_QUIT 来停止消息泵。
     """
+
+    # 类级别保持 HOOKPROC 引用，防止 ctypes 回调被 GC
+    _hook_proc_ref = None
+    _ime_hook_proc_ref = None
 
     def __init__(
         self,
@@ -385,11 +348,10 @@ class KeyboardHook:
         self._on_event = on_event
         self._capture_hotkeys = capture_hotkeys
 
-        self._hook = None
-        self._hook_proc = None  # 保持引用防止 GC
-        self._ime_hook: IMEMessageHook | None = None
-        if _HAS_WIN_API:
-            self._ime_hook = IMEMessageHook(on_ime_result=self._on_ime_result_from_hook)
+        self._kb_hook = None
+        self._ime_hook = None
+        self._hook_thread: threading.Thread | None = None
+        self._thread_id: int | None = None
 
         self._ctrl_pressed = False
         self._alt_pressed = False
@@ -399,13 +361,10 @@ class KeyboardHook:
         self._event_count = 0
         self._first_event_logged = False
         self._installed = False
+        self._stop_flag = False
 
     def start(self):
-        """在调用线程上安装键盘钩子。
-
-        重要：调用线程必须有 Windows 消息泵（如 pywebview 的主循环）。
-        不要在没有消息泵的线程上调用此方法。
-        """
+        """启动键盘监听（创建专用线程）"""
         if self._installed:
             return
 
@@ -413,41 +372,90 @@ class KeyboardHook:
             logger.error("Windows API 不可用，无法安装键盘钩子")
             return
 
-        # 保持 HOOKPROC 引用，防止 ctypes 回调被 GC
-        self._hook_proc = HOOKPROC(self._kbd_hook_callback)
+        # 保持 HOOKPROC 引用在类级别，防止 GC 导致崩溃
+        KeyboardHook._hook_proc_ref = HOOKPROC(self._kbd_hook_callback)
+        KeyboardHook._ime_hook_proc_ref = HOOKPROC(self._ime_getmsg_callback)
+
+        self._stop_flag = False
+        self._hook_thread = threading.Thread(
+            target=self._hook_thread_main, daemon=True, name="KbHookThread",
+        )
+        self._hook_thread.start()
+
+        # 等待线程安装完成（最多2秒）
+        for _ in range(20):
+            if self._installed:
+                break
+            time.sleep(0.1)
+
+        if self._installed:
+            logger.info("键盘钩子线程已启动 (thread_id=%s)", self._thread_id)
+        else:
+            logger.error("键盘钩子线程启动超时")
+
+    def _hook_thread_main(self):
+        """专用线程主函数：安装钩子 + 运行消息泵"""
+        thread_id = _kernel32.GetCurrentThreadId()
+        self._thread_id = thread_id
 
         h_module = _kernel32.GetModuleHandleW(None)
-        thread_id = _kernel32.GetCurrentThreadId()
 
-        # 安装 WH_KEYBOARD_LL 钩子
-        self._hook = _user32.SetWindowsHookExW(
-            WH_KEYBOARD_LL, self._hook_proc, h_module, 0,
+        # 1. 安装 WH_KEYBOARD_LL
+        self._kb_hook = _user32.SetWindowsHookExW(
+            WH_KEYBOARD_LL, KeyboardHook._hook_proc_ref, h_module, 0,
         )
-        if self._hook:
+        if self._kb_hook:
             logger.info("WH_KEYBOARD_LL 钩子已安装 (thread_id=%d)", thread_id)
         else:
             err = _kernel32.GetLastError()
             logger.error("WH_KEYBOARD_LL 钩子安装失败 (error=%d)", err)
+            return
 
-        # 安装 IME 消息钩子（WH_GETMESSAGE）
+        # 2. 安装 WH_GETMESSAGE（IME 消息钩子，同线程）
+        self._ime_hook = _user32.SetWindowsHookExW(
+            WH_GETMESSAGE, KeyboardHook._ime_hook_proc_ref, h_module, thread_id,
+        )
         if self._ime_hook:
-            self._ime_hook.start()
+            logger.info("IME 消息钩子已安装 (WH_GETMESSAGE, thread_id=%d)", thread_id)
+        else:
+            err = _kernel32.GetLastError()
+            logger.warning("IME 消息钩子安装失败 (error=%d)", err)
 
         self._installed = True
 
-    def stop(self):
-        """卸载键盘钩子"""
-        if self._ime_hook:
-            self._ime_hook.stop()
+        # 3. 消息泵：GetMessageW 循环
+        # WH_KEYBOARD_LL 回调需要此消息泵来传递
+        logger.info("消息泵已启动，等待键盘事件...")
+        msg = ctypes.wintypes.MSG()
+        while not self._stop_flag:
+            ret = _user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
+            if ret <= 0:  # WM_QUIT 或错误
+                break
+            _user32.DispatchMessageW(ctypes.byref(msg))
 
-        if self._hook:
-            try:
-                _user32.UnhookWindowsHookEx(self._hook)
-            except Exception:
-                logger.exception("WH_KEYBOARD_LL 卸载异常")
-            self._hook = None
+        logger.info("消息泵已停止 (events=%d)", self._event_count)
+
+        # 4. 卸载钩子
+        if self._kb_hook:
+            _user32.UnhookWindowsHookEx(self._kb_hook)
+            self._kb_hook = None
+        if self._ime_hook:
+            _user32.UnhookWindowsHookEx(self._ime_hook)
+            self._ime_hook = None
 
         self._installed = False
+
+    def stop(self):
+        """停止键盘监听（发送 WM_QUIT 到钩子线程）"""
+        self._stop_flag = True
+
+        if self._thread_id:
+            # 向钩子线程发送 WM_QUIT，使其 GetMessageW 返回
+            _user32.PostThreadMessageW(self._thread_id, WM_QUIT, 0, 0)
+
+        if self._hook_thread:
+            self._hook_thread.join(timeout=2)
+
         logger.info("KeyboardHook 已停止 (events=%d)", self._event_count)
 
     def _kbd_hook_callback(self, nCode, wParam, lParam):
@@ -460,7 +468,7 @@ class KeyboardHook:
 
                     # 忽略注入事件（SendInput 等）
                     if kb.flags & LLKHF_INJECTED:
-                        return _user32.CallNextHookEx(self._hook, nCode, wParam, lParam)
+                        return _user32.CallNextHookEx(self._kb_hook, nCode, wParam, lParam)
 
                     self._event_count += 1
                     if not self._first_event_logged:
@@ -477,7 +485,26 @@ class KeyboardHook:
             except Exception:
                 logger.exception("键盘钩子回调异常")
 
-        return _user32.CallNextHookEx(self._hook, nCode, wParam, lParam)
+        return _user32.CallNextHookEx(self._kb_hook, nCode, wParam, lParam)
+
+    def _ime_getmsg_callback(self, nCode, wParam, lParam):
+        """WH_GETMESSAGE 回调（IME 组合结果）"""
+        if nCode == HC_ACTION and lParam:
+            try:
+                msg = ctypes.wintypes.MSG.from_address(lParam)
+                if msg.message == WM_IME_COMPOSITION:
+                    if msg.lParam & GCS_RESULTSTR:
+                        result = _get_ime_result_string(msg.hwnd)
+                        if result and result != self._last_ime_result:
+                            self._last_ime_result = result
+                            event = KeyEvent(
+                                KeyEventType.PRESS, key=None, char=result,
+                                is_ime_composition=True,
+                            )
+                            self._on_event(event)
+            except Exception:
+                logger.debug("IME 消息钩子回调异常", exc_info=True)
+        return _user32.CallNextHookEx(self._ime_hook, nCode, wParam, lParam)
 
     def _process_keydown(self, vk: int):
         """处理按键按下"""
@@ -492,20 +519,14 @@ class KeyboardHook:
             self._shift_pressed = True
             return
 
-        # 检查 IME 结果（Enter/Space/Tab/Backspace 可能确认 IME 候选词）
+        # Enter/Space/Tab/Backspace 可能确认 IME 候选词
         if vk in (VK_RETURN, VK_SPACE, VK_TAB, VK_BACK, VK_DELETE):
             self._check_and_emit_ime_result()
 
         # 特殊键映射
         if vk in _VK_TO_KEY:
             key = _VK_TO_KEY[vk]
-            # Enter/Backspace/Delete/Tab/Space 始终传递
-            if vk in (VK_RETURN, VK_BACK, VK_DELETE, VK_TAB, VK_SPACE):
-                event = KeyEvent(
-                    KeyEventType.PRESS, key, ctrl_pressed=self._ctrl_pressed,
-                )
-                self._on_event(event)
-            elif self._capture_hotkeys:
+            if vk in (VK_RETURN, VK_BACK, VK_DELETE, VK_TAB, VK_SPACE) or self._capture_hotkeys:
                 event = KeyEvent(
                     KeyEventType.PRESS, key, ctrl_pressed=self._ctrl_pressed,
                 )
@@ -531,16 +552,6 @@ class KeyboardHook:
         elif vk in _SHIFT_VKS:
             self._shift_pressed = False
 
-    def _on_ime_result_from_hook(self, result: str):
-        """IME 消息钩子回调"""
-        if result and result != self._last_ime_result:
-            event = KeyEvent(
-                KeyEventType.PRESS, key=None, char=result,
-                is_ime_composition=True,
-            )
-            self._on_event(event)
-            self._last_ime_result = result
-
     def _check_and_emit_ime_result(self):
         """兜底：检查 IME 组合结果"""
         try:
@@ -548,17 +559,21 @@ class KeyboardHook:
             if not hwnd:
                 return
             result = _get_ime_result_string(hwnd)
-            if result and result != self._last_ime_result:
-                event = KeyEvent(
-                    KeyEventType.PRESS, key=None, char=result,
-                    is_ime_composition=True,
-                )
-                self._on_event(event)
-                self._last_ime_result = result
-            elif not result:
-                self._last_ime_result = ""
+            self._on_ime_result_from_hook(result)
         except Exception:
             pass
+
+    def _on_ime_result_from_hook(self, result: str | None):
+        """处理 IME 结果（去重后发射事件）"""
+        if not result:
+            return
+        if result != self._last_ime_result:
+            self._last_ime_result = result
+            event = KeyEvent(
+                KeyEventType.PRESS, key=None, char=result,
+                is_ime_composition=True,
+            )
+            self._on_event(event)
 
     @property
     def is_ctrl_held(self) -> bool:
@@ -574,5 +589,5 @@ class KeyboardHook:
 
     @property
     def is_alive(self) -> bool:
-        """钩子是否已安装"""
-        return self._installed
+        """钩子线程是否存活"""
+        return self._installed and self._hook_thread is not None and self._hook_thread.is_alive()

@@ -206,23 +206,6 @@ class BlackboxEngine:
         except Exception:
             logger.exception("REST API 初始化失败")
 
-    def install_keyboard_hook(self):
-        """在调用线程上安装键盘钩子（必须在主线程调用）
-
-        由于 WH_KEYBOARD_LL 钩子需要调用线程有消息泵，
-        此方法必须在 pywebview 主线程（webview.start() 之前）调用。
-        """
-        if self._keyboard_hook:
-            logger.info("键盘钩子已存在，跳过安装")
-            return
-        if self._settings.collection["keyboard_enabled"]:
-            self._keyboard_hook = KeyboardHook(
-                on_event=self._on_keyboard_event,
-                capture_hotkeys=self._settings.collection["capture_hotkeys"],
-            )
-            self._keyboard_hook.start()
-            logger.info("键盘钩子已在主线程安装")
-
     def start(self):
         """启动采集引擎"""
         if self._running:
@@ -244,20 +227,21 @@ class BlackboxEngine:
         if ctx.is_valid:
             self._session_manager.resume(ctx)
 
-        # 启动键盘监听
+        # 启动键盘监听（KeyboardHook 内部创建专用线程 + 消息泵）
         if self._settings.collection["keyboard_enabled"]:
             if not self._keyboard_hook:
-                # 钩子未在主线程安装，在此安装（非主线程可能无法接收回调）
                 self._keyboard_hook = KeyboardHook(
                     on_event=self._on_keyboard_event,
                     capture_hotkeys=self._settings.collection["capture_hotkeys"],
                 )
                 self._keyboard_hook.start()
-                logger.warning("键盘钩子在非主线程安装，可能无法接收回调")
             elif not self._keyboard_hook.is_alive:
-                # 钩子存在但已停止，需要重新安装（必须在主线程）
-                logger.warning("键盘钩子已停止，需要重新安装（请在主线程调用 install_keyboard_hook）")
-            # 已在主线程安装的钩子无需重复安装
+                # 钩子已停止，需要重新创建
+                self._keyboard_hook = KeyboardHook(
+                    on_event=self._on_keyboard_event,
+                    capture_hotkeys=self._settings.collection["capture_hotkeys"],
+                )
+                self._keyboard_hook.start()
             self._keyboard_paused = False
 
         # 启动剪贴板监控
