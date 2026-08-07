@@ -24,7 +24,7 @@ export interface Report {
 
 export interface TaskStatus {
   status: "pending" | "running" | "done" | "failed"
-  result: { markdown: string; saved_path: string } | null
+  result: { markdown?: string; saved_path?: string; extracted?: number } | null
   error: string | null
 }
 
@@ -112,6 +112,25 @@ export interface SearchResult {
   date: string
 }
 
+// 待办事项
+export type TodoStatus = "pending" | "in_progress" | "done" | "cancelled"
+export type TodoPriority = "urgent" | "high" | "normal" | "low"
+
+export interface Todo {
+  id: number
+  title: string
+  status: TodoStatus
+  priority: TodoPriority
+  note: string
+  due_date: string
+  source_type: string // daily_report | weekly_report | monthly_report | manual
+  source_ref: string
+  is_draft: boolean
+  created_at: string
+  updated_at: string
+  completed_at: string
+}
+
 export interface BlackboxApi {
   ping(): Promise<{ ready: boolean; version: string }>
   get_status(): Promise<Status>
@@ -130,6 +149,10 @@ export interface BlackboxApi {
   open_report_file(report_type: string, date: string): Promise<{ ok: boolean; path?: string; error?: string }>
   open_data_dir(): Promise<{ ok: boolean }>
   export_data: (format: string, data_type: string, date?: string) => Promise<{ ok: boolean; path?: string; filename?: string; error?: string }>
+  // 报告导出（html = 单文件；PDF 走前端 window.print，不经此接口）
+  export_report: (format: string, report_type: string, date: string) => Promise<{ ok: boolean; path?: string; filename?: string; error?: string }>
+  // 待办导出 CSV
+  export_todos: (status?: string | null, include_drafts?: boolean) => Promise<{ ok: boolean; path?: string; filename?: string; count?: number; error?: string }>
   save_api_config(provider: string, base_url: string, model: string, api_key: string): Promise<{ ok: boolean; restart_needed?: boolean; backup?: string; error?: string }>
   test_api_config(provider: string, base_url: string, model: string, api_key: string): Promise<{ ok: boolean; detail?: string; error?: string }>
   // 数据浏览
@@ -167,6 +190,14 @@ export interface BlackboxApi {
     current_category: string
   }>
   set_daily_goal: (minutes: number) => Promise<{ ok: boolean; daily_goal_minutes?: number }>
+  // 待办事项
+  extract_todos: (report_type: string, date: string) => Promise<{ task_id: string }>
+  get_todos: (status?: string | null, include_drafts?: boolean, source_ref?: string | null) => Promise<Todo[]>
+  get_todo: (todo_id: number) => Promise<Todo | null>
+  add_todo: (title: string, priority?: string, due_date?: string, note?: string) => Promise<{ ok: boolean; id?: number; error?: string }>
+  update_todo: (todo_id: number, fields: Partial<Todo>) => Promise<{ ok: boolean; error?: string }>
+  adopt_todos: (todo_ids: number[]) => Promise<{ ok: boolean; adopted?: number; error?: string }>
+  delete_todo: (todo_id: number) => Promise<{ ok: boolean; error?: string }>
 }
 
 declare global {
@@ -201,6 +232,21 @@ export function waitForApi(): Promise<BlackboxApi> {
   return apiPromise
 }
 
+// 待办 mock 数据（浏览器 dev 预览用）
+let mockTodoSeq = 100
+const mockToday = new Date().toISOString().slice(0, 10)
+let mockTodos: Todo[] = [
+  { id: 1, title: "完成 GR1003 BOM 成本核算并提交采购评审", status: "in_progress", priority: "high", note: "", due_date: mockToday, source_type: "daily_report", source_ref: "2026-08-06", is_draft: false, created_at: "2026-08-06T18:00:00", updated_at: "2026-08-06T18:00:00", completed_at: "" },
+  { id: 2, title: "跟进骨传导耳机样品交付期", status: "pending", priority: "normal", note: "", due_date: "", source_type: "daily_report", source_ref: "2026-08-06", is_draft: false, created_at: "2026-08-06T18:00:00", updated_at: "2026-08-06T18:00:00", completed_at: "" },
+  { id: 3, title: "补充 MatePad 11.5 竞品对标表的续航数据", status: "pending", priority: "high", note: "", due_date: "2026-08-09", source_type: "daily_report", source_ref: "2026-08-05", is_draft: false, created_at: "2026-08-05T18:00:00", updated_at: "2026-08-05T18:00:00", completed_at: "" },
+  { id: 4, title: "整理本周供应商邮件归档", status: "pending", priority: "low", note: "", due_date: "", source_type: "manual", source_ref: "", is_draft: false, created_at: "2026-08-05T10:00:00", updated_at: "2026-08-05T10:00:00", completed_at: "" },
+  { id: 5, title: "对讲机 GH650 LTE 专网参数确认", status: "done", priority: "normal", note: "", due_date: "", source_type: "daily_report", source_ref: "2026-08-04", is_draft: false, created_at: "2026-08-04T18:00:00", updated_at: "2026-08-04T18:00:00", completed_at: "2026-08-04T17:30:00" },
+  // 草稿区
+  { id: 11, title: "整理 RugOne GR2002 PTT 骑行模式测试用例", status: "pending", priority: "normal", note: "", due_date: "", source_type: "daily_report", source_ref: mockToday, is_draft: true, created_at: "2026-08-07T09:00:00", updated_at: "2026-08-07T09:00:00", completed_at: "" },
+  { id: 12, title: "本周五前回复客户报价单", status: "pending", priority: "high", note: "", due_date: "", source_type: "daily_report", source_ref: mockToday, is_draft: true, created_at: "2026-08-07T09:00:00", updated_at: "2026-08-07T09:00:00", completed_at: "" },
+  { id: 13, title: "安排虚拟试衣 MVP 下周联调", status: "pending", priority: "low", note: "副业·可丢弃", due_date: "", source_type: "daily_report", source_ref: mockToday, is_draft: true, created_at: "2026-08-07T09:00:00", updated_at: "2026-08-07T09:00:00", completed_at: "" },
+]
+
 // 浏览器 dev 调试用 mock（pywebview 环境下不使用）
 const mockApi: BlackboxApi = {
   ping: async () => ({ ready: true, version: "mock" }),
@@ -230,7 +276,11 @@ const mockApi: BlackboxApi = {
   }),
   has_data_for_date: async () => true,
   generate_report: async () => ({ task_id: "mock-1" }),
-  get_task_status: async () => ({ status: "done", result: { markdown: "# 日报（mock）", saved_path: "" }, error: null }),
+  get_task_status: async (task_id?: string) => ({
+    status: "done",
+    result: task_id && task_id.startsWith("extract") ? { extracted: 3 } : { markdown: "# 日报（mock）", saved_path: "" },
+    error: null,
+  }),
   get_api_config: async () => ({
     provider: "glm",
     base_url: "https://open.bigmodel.cn/api/paas/v4",
@@ -242,6 +292,11 @@ const mockApi: BlackboxApi = {
   open_report_file: async () => ({ ok: false, error: "mock" }),
   open_data_dir: async () => ({ ok: true }),
   export_data: async () => ({ ok: true, path: "mock/export.csv", filename: "export.csv" }),
+  export_report: async (format: string, report_type: string, date: string) =>
+    format === "html"
+      ? { ok: true, path: `mock/${report_type}_${date}_report.html`, filename: `${report_type}_${date}_report.html` }
+      : { ok: false, error: "PDF 请点「导出 PDF」用打印另存" },
+  export_todos: async () => ({ ok: true, path: "mock/todos.csv", filename: "todos.csv", count: 8 }),
   save_api_config: async () => ({ ok: true, restart_needed: true }),
   test_api_config: async () => ({ ok: true, detail: "mock 连接成功" }),
   get_app_stats: async () => ({
@@ -315,4 +370,44 @@ const mockApi: BlackboxApi = {
     current_category: "开发工具",
   }),
   set_daily_goal: async (minutes: number) => ({ ok: true, daily_goal_minutes: minutes }),
+  // 待办 mock
+  extract_todos: async () => {
+    const now = new Date().toISOString()
+    const seeds = ["整理 RugOne GR2002 测试用例", "回复客户报价单", "安排下周联调"]
+    seeds.forEach((title) => {
+      mockTodoSeq++
+      mockTodos.push({ id: mockTodoSeq, title, status: "pending", priority: "normal", note: "", due_date: "", source_type: "daily_report", source_ref: mockToday, is_draft: true, created_at: now, updated_at: now, completed_at: "" })
+    })
+    return { task_id: "extract-mock" }
+  },
+  get_todos: async (status?: string | null, include_drafts = true, source_ref?: string | null) =>
+    mockTodos.filter((t) => (!status || t.status === status) && (include_drafts || !t.is_draft) && (!source_ref || t.source_ref === source_ref)),
+  get_todo: async (id: number) => mockTodos.find((t) => t.id === id) ?? null,
+  add_todo: async (title: string, priority = "normal", due_date = "", note = "") => {
+    mockTodoSeq++
+    const now = new Date().toISOString()
+    mockTodos.push({ id: mockTodoSeq, title, status: "pending", priority: priority as TodoPriority, note, due_date, source_type: "manual", source_ref: "", is_draft: false, created_at: now, updated_at: now, completed_at: "" })
+    return { ok: true, id: mockTodoSeq }
+  },
+  update_todo: async (id: number, fields: Partial<Todo>) => {
+    const t = mockTodos.find((x) => x.id === id)
+    if (t) Object.assign(t, fields, { updated_at: new Date().toISOString() })
+    return { ok: !!t }
+  },
+  adopt_todos: async (ids: number[]) => {
+    let n = 0
+    mockTodos.forEach((t) => {
+      if (ids.includes(t.id) && t.is_draft) {
+        t.is_draft = false
+        t.updated_at = new Date().toISOString()
+        n++
+      }
+    })
+    return { ok: true, adopted: n }
+  },
+  delete_todo: async (id: number) => {
+    const before = mockTodos.length
+    mockTodos = mockTodos.filter((t) => t.id !== id)
+    return { ok: mockTodos.length < before }
+  },
 }

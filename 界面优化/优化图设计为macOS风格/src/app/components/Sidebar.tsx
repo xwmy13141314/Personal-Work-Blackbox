@@ -66,7 +66,7 @@ export function Sidebar({
         <p className="text-[10px] font-semibold text-[var(--wt-text-muted)] uppercase tracking-wider px-1 mb-1">导航</p>
       </div>
       <nav className="flex-1 px-2 space-y-0.5 overflow-y-auto">
-        {navItems.map(({ key, icon: Icon, label }) => {
+        {navItems.map(({ key, icon: Icon, label, badge }) => {
           const isActive = view === key;
           return (
             <button
@@ -78,7 +78,12 @@ export function Sidebar({
             >
               <Icon className={`w-3.5 h-3.5 shrink-0 ${isActive ? "text-[var(--wt-accent)]" : "text-[var(--wt-text-tertiary)]"}`} />
               {label}
-              {isActive && <ChevronRight className="w-3 h-3 text-[var(--wt-text-muted)] ml-auto" />}
+              {badge && (
+                <span className="ml-auto text-[9px] bg-[var(--wt-danger)] text-white px-1.5 rounded-full font-semibold leading-[1.4]">
+                  {badge}
+                </span>
+              )}
+              {isActive && !badge && <ChevronRight className="w-3 h-3 text-[var(--wt-text-muted)] ml-auto" />}
             </button>
           );
         })}

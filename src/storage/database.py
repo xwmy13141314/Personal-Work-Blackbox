@@ -33,6 +33,7 @@ from .models import (
     DailyReportRecord,
     PeriodReportRecord,
     WindowEventRecord,
+    TodoRecord,
 )
 
 logger = logging.getLogger(__name__)
@@ -113,6 +114,22 @@ CREATE TABLE IF NOT EXISTS period_reports (
     UNIQUE(report_type, period_start)
 );
 
+-- 待办事项
+CREATE TABLE IF NOT EXISTS todos (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    title         TEXT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'pending',
+    priority      TEXT NOT NULL DEFAULT 'normal',
+    note          TEXT DEFAULT '',
+    due_date      TEXT,
+    source_type   TEXT DEFAULT 'manual',
+    source_ref    TEXT DEFAULT '',
+    is_draft      INTEGER DEFAULT 1,
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL,
+    completed_at  TEXT
+);
+
 -- 索引
 CREATE INDEX IF NOT EXISTS idx_sessions_start ON sessions(start_time);
 CREATE INDEX IF NOT EXISTS idx_sessions_process ON sessions(process_name);
@@ -122,6 +139,10 @@ CREATE INDEX IF NOT EXISTS idx_text_segments_timestamp ON text_segments(timestam
 CREATE INDEX IF NOT EXISTS idx_clipboard_timestamp ON clipboard_records(timestamp);
 CREATE INDEX IF NOT EXISTS idx_reports_date ON daily_reports(report_date);
 CREATE INDEX IF NOT EXISTS idx_period_reports_type ON period_reports(report_type, period_start);
+CREATE INDEX IF NOT EXISTS idx_todos_status ON todos(status);
+CREATE INDEX IF NOT EXISTS idx_todos_draft ON todos(is_draft);
+CREATE INDEX IF NOT EXISTS idx_todos_due ON todos(due_date);
+CREATE INDEX IF NOT EXISTS idx_todos_source ON todos(source_type, source_ref);
 """
 
 
@@ -763,4 +784,113 @@ class Database:
             period_end=row[3], report_label=row[4],
             structured_report=row[5], model_used=row[6],
             generated_at=row[7], format=row[8], token_count=row[9],
+        )
+
+    # ==================== 待办事项 CRUD ====================
+
+    def insert_todo(self, todo: TodoRecord) -> int:
+        """插入一条待办，返回自增 ID"""
+        with self._cursor() as cur:
+            cur.execute(
+                """INSERT INTO todos (title, status, priority, note, due_date,
+                   source_type, source_ref, is_draft, created_at, updated_at, completed_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    todo.title, todo.status, todo.priority, todo.note, todo.due_date,
+                    todo.source_type, todo.source_ref, int(todo.is_draft),
+                    todo.created_at, todo.updated_at, todo.completed_at,
+                ),
+            )
+            return cur.lastrowid
+
+    def query_todo(self, todo_id: int) -> TodoRecord | None:
+        """按主键查单个待办"""
+        with self._cursor() as cur:
+            cur.execute(
+                """SELECT id, title, status, priority, note, due_date, source_type,
+                   source_ref, is_draft, created_at, updated_at, completed_at
+                   FROM todos WHERE id = ?""",
+                (todo_id,),
+            )
+            row = cur.fetchone()
+        return self._row_to_todo(row) if row else None
+
+    def query_todos(
+        self,
+        status: str | None = None,
+        include_drafts: bool = True,
+        source_ref: str | None = None,
+    ) -> list[TodoRecord]:
+        """查询待办列表（默认含草稿，按创建时间降序）
+
+        Args:
+            status: 按状态过滤（None = 全部）
+            include_drafts: 是否包含草稿区的待办
+            source_ref: 按来源标识过滤
+        """
+        conditions = []
+        params: list = []
+        if status:
+            conditions.append("status = ?")
+            params.append(status)
+        if not include_drafts:
+            conditions.append("is_draft = 0")
+        if source_ref:
+            conditions.append("source_ref = ?")
+            params.append(source_ref)
+
+        where = " WHERE " + " AND ".join(conditions) if conditions else ""
+        with self._cursor() as cur:
+            cur.execute(
+                f"""SELECT id, title, status, priority, note, due_date, source_type,
+                    source_ref, is_draft, created_at, updated_at, completed_at
+                    FROM todos{where}
+                    ORDER BY created_at DESC""",
+                params,
+            )
+            rows = cur.fetchall()
+        return [self._row_to_todo(row) for row in rows]
+
+    def update_todo(self, todo_id: int, fields: dict) -> bool:
+        """更新待办字段（白名单校验，防注入）
+
+        Args:
+            fields: 允许更新的列子集 {title/status/priority/note/due_date/
+                    is_draft/updated_at/completed_at/source_type/source_ref}
+        Returns:
+            True 如果有行被更新
+        """
+        allowed = {
+            "title", "status", "priority", "note", "due_date", "is_draft",
+            "updated_at", "completed_at", "source_type", "source_ref",
+        }
+        updates = {k: v for k, v in fields.items() if k in allowed}
+        if not updates:
+            return False
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        params: list = []
+        for k in updates:
+            v = updates[k]
+            params.append(int(v) if k == "is_draft" else v)
+        params.append(todo_id)
+        with self._cursor() as cur:
+            cur.execute(f"UPDATE todos SET {set_clause} WHERE id = ?", params)
+            return cur.rowcount > 0
+
+    def delete_todo(self, todo_id: int) -> bool:
+        """删除一条待办"""
+        with self._cursor() as cur:
+            cur.execute("DELETE FROM todos WHERE id = ?", (todo_id,))
+            return cur.rowcount > 0
+
+    @staticmethod
+    def _row_to_todo(row) -> TodoRecord:
+        """行记录转 TodoRecord"""
+        return TodoRecord(
+            id=row[0], title=row[1], status=row[2], priority=row[3],
+            note=row[4] or "", due_date=row[5] or "",
+            source_type=row[6] or "manual", source_ref=row[7] or "",
+            is_draft=bool(row[8]),
+            created_at=row[9], updated_at=row[10],
+            completed_at=row[11] or "",
         )

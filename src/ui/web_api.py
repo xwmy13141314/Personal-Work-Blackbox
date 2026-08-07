@@ -436,6 +436,167 @@ class BlackboxAPI:
             logger.exception("拼音转换失败")
             return {"original": text, "converted": text, "has_pinyin": False, "changed": False}
 
+    # ==================== 待办事项（提取走异步任务，CRUD 同步） ====================
+
+    def extract_todos(self, report_type: str, date: str) -> dict:
+        """异步从报告提取待办：立即返回 task_id，前端轮询 get_task_status
+
+        结果 result: {"extracted": int}
+        """
+        with self._lock:
+            self._task_seq += 1
+            task_id = f"task-{self._task_seq}"
+            self._tasks[task_id] = {"status": "pending", "result": None, "error": None}
+        threading.Thread(
+            target=self._extract_todos_worker,
+            args=(task_id, report_type, date),
+            daemon=True,
+            name=f"ExtractTodo-{task_id}",
+        ).start()
+        return {"task_id": task_id}
+
+    def _extract_todos_worker(self, task_id: str, report_type: str, date: str):
+        """待办提取工作线程"""
+        engine = self._engine
+        try:
+            self._set_task(task_id, status="running")
+            if not engine._todo_extractor:
+                self._set_task(task_id, status="failed",
+                               error="AI 层未初始化，请检查 config.yaml 中的 api_key 配置")
+                return
+            result = engine.extract_todos_from_report(report_type, date)
+            if not result.get("ok"):
+                self._set_task(task_id, status="failed", error=result.get("error", "提取失败"))
+                return
+            self._set_task(task_id, status="done",
+                           result={"extracted": result.get("extracted", 0)})
+        except Exception as e:
+            logger.exception("待办提取工作线程异常")
+            self._set_task(task_id, status="failed", error=str(e))
+
+    def get_todos(self, status: str | None = None, include_drafts: bool = True,
+                  source_ref: str | None = None) -> list:
+        """查询待办列表"""
+        engine = self._engine
+        if not engine._db.is_connected:
+            return []
+        try:
+            rows = engine._db.query_todos(status=status, include_drafts=include_drafts,
+                                          source_ref=source_ref)
+            return [self._todo_to_dict(t) for t in rows]
+        except Exception:
+            logger.exception("查询待办列表失败")
+            return []
+
+    def get_todo(self, todo_id: int) -> dict | None:
+        """查询单个待办"""
+        engine = self._engine
+        if not engine._db.is_connected:
+            return None
+        try:
+            t = engine._db.query_todo(int(todo_id))
+            return self._todo_to_dict(t) if t else None
+        except Exception:
+            logger.exception("查询待办失败")
+            return None
+
+    def add_todo(self, title: str, priority: str = "normal", due_date: str = "",
+                 note: str = "") -> dict:
+        """手动新建待办（非草稿，直接正式入库）"""
+        from src.storage.models import TodoRecord
+        engine = self._engine
+        if not engine._db.is_connected:
+            return {"ok": False, "error": "数据库未连接"}
+        title = (title or "").strip()
+        if not title:
+            return {"ok": False, "error": "待办内容不能为空"}
+        try:
+            now = datetime.now().isoformat()
+            todo_id = engine._db.insert_todo(TodoRecord(
+                title=title[:200],
+                priority=priority if priority in ("low", "normal", "high", "urgent") else "normal",
+                due_date=due_date or "",
+                note=note or "",
+                source_type="manual",
+                is_draft=False,
+                created_at=now,
+                updated_at=now,
+            ))
+            return {"ok": True, "id": todo_id}
+        except Exception as e:
+            logger.exception("新建待办失败")
+            return {"ok": False, "error": str(e)}
+
+    def update_todo(self, todo_id: int, fields: dict) -> dict:
+        """更新待办字段（status 变 done 自动记录 completed_at）
+
+        Args:
+            fields: {title/status/priority/note/due_date/is_draft/...}
+        """
+        engine = self._engine
+        if not engine._db.is_connected:
+            return {"ok": False, "error": "数据库未连接"}
+        try:
+            todo_id = int(todo_id)
+            fields = dict(fields or {})
+            status = fields.get("status")
+            if status == "done":
+                fields.setdefault("completed_at", datetime.now().isoformat())
+            elif status in ("pending", "in_progress", "cancelled"):
+                fields["completed_at"] = ""
+            fields["updated_at"] = datetime.now().isoformat()
+            ok = engine._db.update_todo(todo_id, fields)
+            return {"ok": ok}
+        except Exception as e:
+            logger.exception("更新待办失败")
+            return {"ok": False, "error": str(e)}
+
+    def adopt_todos(self, todo_ids: list) -> dict:
+        """批量采纳草稿待办（is_draft: 1 → 0，转为正式待办）"""
+        engine = self._engine
+        if not engine._db.is_connected:
+            return {"ok": False, "error": "数据库未连接"}
+        try:
+            now = datetime.now().isoformat()
+            adopted = 0
+            for tid in (todo_ids or []):
+                if engine._db.update_todo(int(tid), {"is_draft": False, "updated_at": now}):
+                    adopted += 1
+            return {"ok": True, "adopted": adopted}
+        except Exception as e:
+            logger.exception("采纳待办失败")
+            return {"ok": False, "error": str(e)}
+
+    def delete_todo(self, todo_id: int) -> dict:
+        """删除待办"""
+        engine = self._engine
+        if not engine._db.is_connected:
+            return {"ok": False, "error": "数据库未连接"}
+        try:
+            ok = engine._db.delete_todo(int(todo_id))
+            return {"ok": ok}
+        except Exception as e:
+            logger.exception("删除待办失败")
+            return {"ok": False, "error": str(e)}
+
+    @staticmethod
+    def _todo_to_dict(t) -> dict:
+        """TodoRecord → JSON-able dict（pywebview 不能返回 dataclass）"""
+        return {
+            "id": t.id,
+            "title": t.title,
+            "status": t.status,
+            "priority": t.priority,
+            "note": t.note,
+            "due_date": t.due_date,
+            "source_type": t.source_type,
+            "source_ref": t.source_ref,
+            "is_draft": t.is_draft,
+            "created_at": t.created_at,
+            "updated_at": t.updated_at,
+            "completed_at": t.completed_at,
+        }
+
     # ==================== API 配置（脱敏） ====================
 
     def get_api_config(self) -> dict:
@@ -601,6 +762,70 @@ class BlackboxAPI:
             return {"ok": True, "path": str(path), "filename": filename}
         except Exception as e:
             logger.exception("导出数据失败")
+            return {"ok": False, "error": str(e)}
+
+    def export_report(self, format: str, report_type: str, date: str) -> dict:
+        """导出报告为单文件 HTML（PDF 走前端 window.print，不经此接口）
+
+        Args:
+            format: html（其他值回退提示用前端打印）
+            report_type: daily / weekly / monthly
+            date: 报告日期
+        """
+        try:
+            from src.storage.report_exporter import render_report_html
+            from src.main import get_app_root
+
+            rep = self.get_report(report_type, date)
+            if not rep or not rep.get("markdown"):
+                return {"ok": False, "error": "报告不存在或无内容，请先生成报告"}
+            if format != "html":
+                return {"ok": False, "error": "PDF 请点「导出 PDF」用打印另存"}
+
+            type_label = {"daily": "日报", "weekly": "周报", "monthly": "月报"}.get(report_type, "报告")
+            title = f"职迹{type_label} · {date}"
+            parts = []
+            if rep.get("model_used"):
+                parts.append(f"模型 {rep['model_used']}")
+            if rep.get("generated_at"):
+                parts.append(f"生成于 {rep['generated_at'][:16].replace('T', ' ')}")
+            subtitle = " · ".join(parts)
+
+            export_dir = get_app_root() / "data" / "exports"
+            export_dir.mkdir(parents=True, exist_ok=True)
+            filename = f"export_{report_type}_{date}_report.html"
+            path = export_dir / filename
+            path.write_text(
+                render_report_html(rep["markdown"], title, subtitle),
+                encoding="utf-8",
+            )
+            return {"ok": True, "path": str(path), "filename": filename}
+        except Exception as e:
+            logger.exception("导出报告失败")
+            return {"ok": False, "error": str(e)}
+
+    def export_todos(self, status: str | None = None, include_drafts: bool = True) -> dict:
+        """导出待办列表为 CSV（utf-8-sig，Excel/飞书多维表格直接打开）
+
+        Args:
+            status: 按状态过滤（None = 全部），与待办视图当前筛选一致
+            include_drafts: 是否包含草稿区
+        """
+        try:
+            from src.storage.data_exporter import DataExporter
+            from src.main import get_app_root
+
+            rows = self._engine._db.query_todos(status=status, include_drafts=include_drafts)
+            exporter = DataExporter(self._engine._db)
+
+            export_dir = get_app_root() / "data" / "exports"
+            export_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"export_todos_{timestamp}.csv"
+            path = exporter.export_todos_csv(rows, output_path=export_dir / filename)
+            return {"ok": True, "path": str(path), "filename": filename, "count": len(rows)}
+        except Exception as e:
+            logger.exception("导出待办失败")
             return {"ok": False, "error": str(e)}
 
     # ==================== 专注模式 ====================

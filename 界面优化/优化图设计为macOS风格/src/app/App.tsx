@@ -15,6 +15,8 @@ import {
   ChevronLeft,
   AlertTriangle,
   CheckCircle2,
+  FileDown,
+  Printer,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -53,6 +55,7 @@ import { StatsView } from "@/app/components/StatsView";
 import { ActivityView } from "@/app/components/ActivityView";
 import { SettingsView } from "@/app/components/SettingsView";
 import { AboutView } from "@/app/components/AboutView";
+import { TodoView } from "@/app/components/TodoView";
 
 // ==================== 主应用 ====================
 
@@ -70,6 +73,32 @@ export default function App() {
     status: "idle",
     msg: "",
   });
+  const [exportNotice, setExportNotice] = useState<{ kind: "ok" | "err"; msg: string } | null>(null);
+
+  // 导出报告为 HTML（后端渲染单文件，可离线/微信发送）
+  const exportHtml = async () => {
+    if (!api || !report) return;
+    const r = await api.export_report("html", reportType, selectedDate);
+    setExportNotice(r.ok ? { kind: "ok", msg: `已导出 HTML：${r.filename}` } : { kind: "err", msg: r.error || "导出失败" });
+    setTimeout(() => setExportNotice(null), 4000);
+  };
+
+  // 导出 PDF：注入打印样式（仅报告正文可见）→ 浏览器/pywebview 打印 → 另存为 PDF
+  const exportPdf = () => {
+    if (!report) return;
+    const style = document.createElement("style");
+    style.id = "wt-print-report";
+    style.textContent =
+      "body *{visibility:hidden}.wt-print-area,.wt-print-area *{visibility:visible}.wt-print-area{position:absolute;left:0;top:0;width:100%;padding:32px;box-sizing:border-box}";
+    document.head.appendChild(style);
+    const cleanup = () => {
+      style.remove();
+      window.removeEventListener("afterprint", cleanup);
+    };
+    window.addEventListener("afterprint", cleanup);
+    window.print();
+    setTimeout(() => style.remove(), 2000); // 兜底：部分 webview 不触发 afterprint
+  };
 
   // 视图与搜索状态
   const [view, setView] = useState<ViewKey>("report");
@@ -332,6 +361,25 @@ export default function App() {
                 <div className="flex-1" />
 
                 <button
+                  onClick={exportHtml}
+                  disabled={!report}
+                  className="flex items-center gap-1 px-3 py-1 rounded-full text-[11px] font-medium text-[var(--wt-text-secondary)] hover:bg-black/[0.06] disabled:opacity-40 transition-all"
+                  title="导出为 HTML 单文件（可离线 / 微信发送）"
+                >
+                  <FileDown className="w-3 h-3" />
+                  HTML
+                </button>
+                <button
+                  onClick={exportPdf}
+                  disabled={!report}
+                  className="flex items-center gap-1 px-3 py-1 rounded-full text-[11px] font-medium text-[var(--wt-text-secondary)] hover:bg-black/[0.06] disabled:opacity-40 transition-all"
+                  title="打印 / 另存为 PDF"
+                >
+                  <Printer className="w-3 h-3" />
+                  PDF
+                </button>
+
+                <button
                   onClick={generate}
                   disabled={genState.status === "running"}
                   className="flex items-center gap-1 px-3 py-1 rounded-full text-[11px] font-medium bg-[var(--wt-accent)] text-white hover:brightness-110 disabled:opacity-60 transition-all"
@@ -370,8 +418,18 @@ export default function App() {
                     <p className="text-[11.5px] text-green-700">报告已生成并保存</p>
                   </div>
                 )}
+                {exportNotice && (
+                  <div className={`flex items-start gap-2 rounded-xl border p-3 ${exportNotice.kind === "ok" ? "border-green-200 bg-green-50/70" : "border-orange-200 bg-orange-50/70"}`}>
+                    {exportNotice.kind === "ok" ? (
+                      <CheckCircle2 className="w-3.5 h-3.5 text-green-600 shrink-0 mt-0.5" />
+                    ) : (
+                      <AlertTriangle className="w-3.5 h-3.5 text-orange-500 shrink-0 mt-0.5" />
+                    )}
+                    <p className={`text-[11.5px] ${exportNotice.kind === "ok" ? "text-green-700" : "text-orange-700"}`}>{exportNotice.msg}</p>
+                  </div>
+                )}
 
-                <div className="rounded-xl border border-black/10 bg-white/70 p-4" style={{ backdropFilter: "blur(8px)" }}>
+                <div className="wt-print-area rounded-xl border border-black/10 bg-white/70 p-4" style={{ backdropFilter: "blur(8px)" }}>
                   {reportLoading ? (
                     <p className="text-[12px] text-[var(--wt-text-muted)] py-8 text-center">加载中...</p>
                   ) : report?.markdown ? (
@@ -415,6 +473,7 @@ export default function App() {
               }}
             />
           )}
+          {view === "todo" && <TodoView api={api} date={selectedDate || status?.today || ""} />}
           {view === "settings" && <SettingsView api={api} apiConfig={apiConfig} />}
           {view === "about" && <AboutView />}
         </main>

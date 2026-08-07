@@ -22,6 +22,9 @@ pywebview>=5.0             # 嵌入式 WebView（Web GUI，替代 tkinter）
 pyyaml>=6.0                # YAML 配置文件解析
 pydantic>=2.5.0            # 数据模型验证
 
+# ===== 导出 =====
+markdown>=3.5             # 报告 Markdown→HTML 渲染（单文件导出，tables/fenced_code 扩展）
+
 # ===== 开发依赖 =====
 pytest>=8.0.0              # 单元测试
 pytest-asyncio>=0.23.0     # 异步测试支持

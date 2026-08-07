@@ -139,3 +139,44 @@ class DataExporter:
 
         logger.info("文本片段 CSV 导出完成: %s (%d 条)", output_path, len(rows))
         return output_path
+
+    # 待办状态/优先级/来源 → 中文显示
+    _TODO_STATUS_CN = {"pending": "待办", "in_progress": "进行中", "done": "已完成", "cancelled": "已取消"}
+    _TODO_PRIORITY_CN = {"urgent": "紧急", "high": "高", "normal": "中", "low": "低"}
+    _TODO_SOURCE_CN = {"daily_report": "日报", "weekly_report": "周报", "monthly_report": "月报", "manual": "手动"}
+
+    def export_todos_csv(self, todos, output_path: Path | None = None) -> Path:
+        """导出待办列表为 CSV（utf-8-sig BOM，Excel/飞书多维表格/Numbers 直接打开中文不乱码）
+
+        Args:
+            todos: TodoRecord 列表
+            output_path: 输出文件路径，None 则在当前目录自动生成
+
+        Returns: 导出文件路径
+        """
+        if output_path is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_path = Path(f"export_todos_{timestamp}.csv")
+
+        with open(output_path, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "标题", "状态", "优先级", "备注", "截止日期",
+                "来源", "来源引用", "是否草稿", "创建时间", "完成时间",
+            ])
+            for t in todos:
+                writer.writerow([
+                    t.title,
+                    self._TODO_STATUS_CN.get(t.status, t.status),
+                    self._TODO_PRIORITY_CN.get(t.priority, t.priority),
+                    t.note,
+                    t.due_date,
+                    self._TODO_SOURCE_CN.get(t.source_type, t.source_type),
+                    t.source_ref,
+                    "是" if t.is_draft else "否",
+                    t.created_at,
+                    t.completed_at,
+                ])
+
+        logger.info("待办 CSV 导出完成: %s (%d 条)", output_path, len(todos))
+        return output_path

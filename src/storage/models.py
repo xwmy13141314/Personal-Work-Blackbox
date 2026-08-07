@@ -84,3 +84,20 @@ class PeriodReportRecord:
     generated_at: str = ""
     format: str = "markdown"
     token_count: int = 0
+
+
+@dataclass
+class TodoRecord:
+    """待办事项记录（从报告中提取或手动新建）"""
+    id: Optional[int] = None
+    title: str = ""                 # 待办内容（必填）
+    status: str = "pending"         # pending | in_progress | done | cancelled
+    priority: str = "normal"        # low | normal | high | urgent
+    note: str = ""                  # 备注
+    due_date: str = ""              # 截止日期 YYYY-MM-DD（可空）
+    source_type: str = "manual"     # daily_report | weekly_report | monthly_report | manual
+    source_ref: str = ""            # 来源标识，如日报日期 "2026-08-06"
+    is_draft: bool = True           # 草稿区：AI 提取的待办先进草稿，用户采纳后才正式入库
+    created_at: str = ""            # ISO8601
+    updated_at: str = ""            # ISO8601
+    completed_at: str = ""          # 完成时间 ISO8601（仅 status=done 时有值）

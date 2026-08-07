@@ -170,6 +170,7 @@ class BlackboxEngine:
 
         # AI 摘要层
         self._report_generator = None
+        self._todo_extractor = None
         self._init_ai_layer()
 
         # REST API 服务器
@@ -364,6 +365,13 @@ class BlackboxEngine:
                 llm_client=llm_client,
                 prompt_engine=prompt_engine,
             )
+
+            from src.ai.todo_extractor import TodoExtractor
+            self._todo_extractor = TodoExtractor(
+                db=self._db,
+                llm_client=llm_client,
+                prompt_engine=prompt_engine,
+            )
             logger.info("AI 摘要层已初始化，提供商: %s", ai_config.get("default_provider"))
 
             # 自动补生成缺失的日报
@@ -462,6 +470,71 @@ class BlackboxEngine:
         except Exception:
             logger.exception("月报生成失败")
             return None
+
+    def extract_todos_from_report(self, report_type: str, date: str) -> dict:
+        """从指定报告中提取待办，批量存入草稿区
+
+        Args:
+            report_type: daily / weekly / monthly
+            date: 报告对应日期（YYYY-MM-DD；周期报告传该周期内任意一天）
+
+        Returns:
+            {"ok": bool, "extracted": int, "error": str?}
+        """
+        if not self._todo_extractor:
+            return {"ok": False, "error": "AI 层未初始化，无法提取待办"}
+        if not self._db.is_connected:
+            return {"ok": False, "error": "数据库未连接"}
+
+        # 1. 取报告文本
+        if report_type == "daily":
+            record = self._db.query_daily_report(date)
+            source_ref = date
+        elif report_type in ("weekly", "monthly"):
+            from src.ai.report_generator import _week_range, _month_range
+            if report_type == "weekly":
+                period_start, _ = _week_range(date)
+            else:
+                period_start, _ = _month_range(date)
+            record = self._db.query_period_report(report_type, period_start)
+            source_ref = period_start
+        else:
+            return {"ok": False, "error": f"未知报告类型: {report_type}"}
+
+        if not record or not getattr(record, "structured_report", ""):
+            return {"ok": False, "error": f"未找到 {report_type} 报告，请先生成报告"}
+
+        # 2. 提取（复用 LLMClient 重试降级）
+        try:
+            todos = self._todo_extractor.extract_sync(record.structured_report)
+        except Exception:
+            logger.exception("待办提取失败")
+            return {"ok": False, "error": "待办提取失败，请检查网络与 API 配置"}
+
+        # 3. 批量入草稿区（is_draft=True，待用户采纳）
+        from src.storage.models import TodoRecord
+        now = datetime.now().isoformat()
+        inserted = 0
+        for t in todos:
+            try:
+                rec = TodoRecord(
+                    title=t["title"],
+                    priority=t.get("priority", "normal"),
+                    due_date=t.get("due_date", ""),
+                    note=t.get("note", ""),
+                    source_type=f"{report_type}_report",
+                    source_ref=source_ref,
+                    is_draft=True,
+                    created_at=now,
+                    updated_at=now,
+                )
+                self._db.insert_todo(rec)
+                inserted += 1
+            except Exception:
+                logger.exception("插入待办草稿失败: %s", t)
+
+        logger.info("从 %s 报告提取待办 %d 条，入库 %d 条", report_type, len(todos), inserted)
+        return {"ok": True, "extracted": inserted}
 
     def get_period_report(self, report_type: str, date: str | None = None):
         """查询已有的周报/月报"""

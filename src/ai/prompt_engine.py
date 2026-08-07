@@ -111,6 +111,36 @@ BUILTIN_MONTHLY_USER_TEMPLATE = """请分析以下本月活动汇总，生成工
 5. **下月计划建议**（基于本月待办和进展建议下月重点）"""
 
 
+# ==================== 待办提取 Prompt ====================
+
+BUILTIN_TODO_EXTRACT_SYSTEM = """你是一个待办事项提取助手。你的任务是从工作日报/周报/月报中提取尚未完成、需要后续跟进的待办事项。
+
+规则：
+1. 只提取「尚未完成」「需要跟进」「计划要做」的事项，不要提取已完成或已取消的事项
+2. 每个待办用一句话表述，简明扼要、可执行
+3. 忽略泛泛而谈的内容，只保留具体可行动的任务
+4. 合并重复或相近的事项
+5. 输出必须是合法的 JSON 数组，不要输出任何其他文字
+6. 若报告中没有任何待办，输出空数组 []"""
+
+BUILTIN_TODO_USER_TEMPLATE = """请从以下报告中提取待办事项。
+
+## 报告内容
+{report_text}
+
+## 输出格式
+输出一个 JSON 数组，每个元素代表一个待办，字段如下：
+- title：待办内容（字符串，必填，一句话，可执行）
+- priority：优先级（字符串，可选值 "urgent" / "high" / "normal" / "low"，无法判断时用 "normal"）
+- due_date：截止日期（字符串，格式 YYYY-MM-DD；若报告未提及明确截止日则留空字符串）
+- note：备注（字符串，可选，补充说明，无则留空字符串）
+
+示例：
+[{{"title": "回复客户A的合同邮件", "priority": "high", "due_date": "2026-08-08", "note": ""}}]
+
+只输出 JSON 数组本身，不要包裹在代码块中，不要有任何解释。"""
+
+
 class PromptEngine:
     """Prompt 模板引擎
 
@@ -127,6 +157,8 @@ class PromptEngine:
         self._weekly_user = BUILTIN_WEEKLY_USER_TEMPLATE
         self._monthly_system = BUILTIN_MONTHLY_SYSTEM_PROMPT
         self._monthly_user = BUILTIN_MONTHLY_USER_TEMPLATE
+        self._todo_extract_system = BUILTIN_TODO_EXTRACT_SYSTEM
+        self._todo_extract_user = BUILTIN_TODO_USER_TEMPLATE
         self._load_templates()
 
     def _load_templates(self):
@@ -262,6 +294,21 @@ class PromptEngine:
 
         return [
             {"role": "system", "content": self._monthly_system},
+            {"role": "user", "content": user_content},
+        ]
+
+    def build_todo_extract_prompt(self, report_text: str) -> list[dict[str, str]]:
+        """构建待办提取 Prompt
+
+        Args:
+            report_text: 日报/周报/月报的 Markdown 文本
+
+        Returns:
+            消息列表 [{"role": "system"|"user", "content": "..."}]
+        """
+        user_content = self._todo_extract_user.format(report_text=report_text or "（空报告）")
+        return [
+            {"role": "system", "content": self._todo_extract_system},
             {"role": "user", "content": user_content},
         ]
 
