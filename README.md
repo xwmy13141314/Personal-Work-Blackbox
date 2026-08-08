@@ -40,9 +40,9 @@
 
 ## 快速开始
 
-### 方式一：直接运行打包版
+### 方式一：下载打包版（推荐）
 
-双击 `dist/WorkTrace.exe`（无需 Python 环境）。
+从 [GitHub Releases](https://github.com/xwmy13141314/Personal-Work-Blackbox/releases/latest) 下载 `WorkTrace.exe`，双击运行（无需 Python 环境，Windows x64）。
 
 ### 方式二：源码运行
 
@@ -237,7 +237,13 @@ PYTHONPATH=src python3 -m personal_recorder build-day --date 2026-07-03
 - **报告导出**：日报/周报/月报导出为 macOS 风格单文件 HTML（卡片化 + 时间分布环形图，内联 CSS/SVG 无外部依赖）；内置 `@media print`，浏览器 Ctrl+P 直接转 PDF
 - **待办导出**：待办列表导出 CSV（UTF-8 BOM，Excel 中文不乱码），状态/优先级中文映射
 - **时间分布环形图**：LLM 从报告提取分类占比（复用 todo_extractor 模式）+ 纯 SVG 渲染，导出 HTML 与 app 内共用一处生成
-- 新增 `src/storage/report_exporter.py`、`src/ai/timedist_extractor.py`；291 passed
+- 新增 `src/storage/report_exporter.py`、`src/ai/timedist_extractor.py`；测试基线 292 passed
+
+**打包与发布（2026-08-08）：**
+- **windowed exe**：`console=False` + 子进程 `CREATE_NO_WINDOW`，双击运行不再弹出终端黑窗；Toast 通知不再闪窗
+- **关于页修正**：联系邮箱更正为 `xwmy1314@gmail.com`；前后端版本号统一为 4.2.0（前端 `APP_VERSION` / 后端 `/ping` 返回值）
+- **.gitignore 加固**：补充 `.env` / `.env.*` 规则，防止密钥文件误上传
+- 已发布至 [GitHub Release v4.2.0](https://github.com/xwmy13141314/Personal-Work-Blackbox/releases/tag/v4.2.0)（含 `WorkTrace.exe`）
 
 ### v4.1.0 (2026-07-08) — 键盘捕获引擎重构 + 关于页面
 

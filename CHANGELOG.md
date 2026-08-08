@@ -68,7 +68,7 @@
 ### 新增「关于」页面
 
 - 五视图导航：报告 / 统计 / 活动 / 设置 / 关于
-- AboutView.tsx 组件：版本信息 (v4.1.0) + 隐私承诺 + 联系方式（邮箱 xwmy134@gmail.com + GitHub 链接）+ 技术栈
+- AboutView.tsx 组件：版本信息 (v4.1.0) + 隐私承诺 + 联系方式（邮箱 xwmy1314@gmail.com + GitHub 链接）+ 技术栈
 - utils.tsx 新增 'about' 到 ViewKey 和 navItems
 - App.tsx 新增 AboutView 路由
 
