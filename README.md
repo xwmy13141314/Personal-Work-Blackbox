@@ -19,7 +19,9 @@
 - **全文搜索**：检索历史输入记录，按日期 / 应用定位
 - **应用分类**：10 类自动分类（开发/浏览器/通讯/办公/设计/娱乐/系统/数据库/AI），含分类统计
 - **专注模式**：娱乐应用检测提醒 + 专注会话 + 每日效率目标
-- **数据导出**：CSV / JSON 格式导出，支持 Excel 兼容编码
+- **数据导出**：活动数据 CSV / JSON 导出 + 待办列表 CSV 导出（UTF-8 BOM，Excel 兼容）
+- **报告导出**：日报/周报/月报一键导出为 macOS 风格单文件 HTML（内联 CSS/SVG，可离线、可微信/邮件直发），浏览器 Ctrl+P 直接转 PDF
+- **时间分布可视化**：LLM 从报告提取时间分布，纯 SVG 环形图渲染，导出 HTML 与 app 内统一呈现
 - **REST API**：本地 HTTP 接口（127.0.0.1:19527），供第三方工具集成
 - **键盘捕获引擎**：ctypes 直接调用 Windows API（WH_KEYBOARD_LL），专用线程 + 独立消息泵，不依赖第三方库，支持 PyInstaller 打包环境
 - **IME 中文捕获**：智能识别中文输入法组合文本，记录汉字而非拼音
@@ -230,6 +232,13 @@ PYTHONPATH=src python3 -m personal_recorder build-day --date 2026-07-03
 
 详见 `CHANGELOG.md`。
 
+### v4.2.0 (2026-08-08) — 报告可视化 + 导出能力
+
+- **报告导出**：日报/周报/月报导出为 macOS 风格单文件 HTML（卡片化 + 时间分布环形图，内联 CSS/SVG 无外部依赖）；内置 `@media print`，浏览器 Ctrl+P 直接转 PDF
+- **待办导出**：待办列表导出 CSV（UTF-8 BOM，Excel 中文不乱码），状态/优先级中文映射
+- **时间分布环形图**：LLM 从报告提取分类占比（复用 todo_extractor 模式）+ 纯 SVG 渲染，导出 HTML 与 app 内共用一处生成
+- 新增 `src/storage/report_exporter.py`、`src/ai/timedist_extractor.py`；291 passed
+
 ### v4.1.0 (2026-07-08) — 键盘捕获引擎重构 + 关于页面
 
 #### 键盘捕获引擎彻底重构
@@ -254,7 +263,7 @@ PYTHONPATH=src python3 -m personal_recorder build-day --date 2026-07-03
 ### v4.0.0 (2026-07-06) — 品牌重定位 + 发布红线 + 功能增强
 
 #### 第一期：发布前红线
-- 品牌重定位：去除"键盘记录"，改为"活动追踪"
+- 品牌重定位：去除旧措辞，改为"活动追踪"
 - 首次启动隐私告知弹窗
 - 数据库加密支持（SQLCipher）
 - IME 中文输入法组合文本捕获

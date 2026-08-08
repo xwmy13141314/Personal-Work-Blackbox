@@ -1,99 +1,59 @@
-# Personal Work Blackbox — AI 项目上下文
+# 职迹 WorkTrace — AI 项目上下文
+
+> 本文件记录**稳定的项目事实与约定**。当前任务进度、近期变更见 `HANDOVER.md`（每次会话先读它）。
 
 ## 项目概述
-轻量化个人工作日志采集与 AI 报告工具。记录键盘输入 + 窗口上下文 + 剪贴板，通过智谱 GLM 生成每日工作报告、周报和月报。
+职迹 WorkTrace — 隐私优先的个人 AI 工作日志工具。三层采集（输入活动 + 窗口上下文 + 剪贴板）→ 隐私过滤 → LLM 生成日报/周报/月报 + 时间分布可视化 + 报告/待办导出。纯本地运行，数据只存本机。当前版本 v4.2.0。
 
-## 关键决策
-- **键盘记录方案**: 使用 pynput (WH_KEYBOARD_LL)，有杀毒误报风险，提供白名单引导脚本
-- **中文 IME**: MVP 阶段仅捕获拼音序列+窗口上下文，V1.1 接入 UI Automation 获取最终文本
-- **AI 提供商**: 默认智谱 GLM-4.5-flash（当前账户可用），充值后切 glm-4.7（改 config.yaml 即可）
-- **存储**: SQLite WAL 模式 + 每日 Markdown 导出
-- **生命周期管理**: `stop()` 停止采集但保留 DB 连接（支持后续报告生成），`shutdown()` 完全关闭含 DB（仅在应用退出时调用）
+## 关键技术决策
+- **键盘捕获**：ctypes 直接调用 Windows API（WH_KEYBOARD_LL）+ 专用线程独立消息泵，**不用 pynput**（打包环境静默回退 _dummy 后端）。v4.1 重构
+- **中文 IME**：WH_GETMESSAGE 钩子 + ImmGetCompositionStringW 主动轮询组合结果
+- **图表方案**：**纯 SVG 环形图，不用 ECharts**。PDF 走 window.print()，静态 SVG 必显示；单文件 HTML 不内联约 1MB JS；后端一处生成，导出 HTML 与 app 内共用
+- **时间分布数据源**：LLM 从报告文本提取（复用 todo_extractor 模式），**不用 DB 分类统计**（sessions 表无 category 列）
+- **LLM 结构化输出**：纯文本 + "prompt 要求 JSON + 后端容错解析"，**不依赖 response_format**
+- **存储**：SQLite WAL + 每日 Markdown 导出；可选 SQLCipher 加密
+- **生命周期**：stop() 停采集但留 DB 连接（支持后续报告生成），shutdown() 才完全关闭（仅应用退出时）
 
-## 运行方式
+## 运行
 ```bash
-python -m src.main --gui       # GUI 模式（默认）
-python -m src.main --no-tray   # 命令行模式
-python -m src.main             # 等同 --gui
+python -m src.main            # Web GUI（默认，pywebview + React）
+python -m src.main --gui-tk   # tkinter 旧 GUI（回退）
+python -m src.main --no-tray  # 命令行模式
 ```
+或双击 `启动.bat` / `dist/WorkTrace.exe`。
 
-## 配置文件
-`config/config.yaml` — AI Key、模型选择、隐私黑名单、性能参数
+API Key 优先用环境变量（`GLM_API_KEY` / `DEEPSEEK_API_KEY` 等），避免明文落盘；未配置时 AI 报告功能不可用。
 
-## 数据库
-`data/blackbox.db` — 6 张表: sessions, window_events, text_segments, clipboard_records, daily_reports, period_reports
-- `period_reports` 存储 AI 周报和月报，按 `(report_type, period_start)` 唯一索引
-- `query_app_usage_stats_range(start, end)` 支持跨日期范围的应用统计
-（config_snapshots 在 PRD 中提及但未实现）
+## 打包
+```bash
+cd 界面优化/优化图设计为macOS风格 && npm install && npm run build:desktop   # 前端 → web_frontend/
+cd ../.. && pyinstaller --noconfirm blackbox.spec                            # → dist/WorkTrace.exe
+```
+重新打包需先关闭运行中的 WorkTrace.exe（Windows 文件锁）。
 
 ## 测试
-164 个测试，覆盖:
-- InputBuffer(16)、PrivacyFilter(19)、SessionManager(9)、AI Layer(24)
-- Database 全量 CRUD(32)、MarkdownExporter(15)、Settings 配置层(18)、ReportGenerator(31)
-- 重试机制 + 错误分类 + 网络诊断(6)
-- 日期范围工具函数(10)、周报/月报生成(8)、PromptEngine 周报/月报(1)
+`python -m pytest -q`，292 passed。导出/可视化测试在 `tests/test_export.py`。
 
-## 当前状态 (2026-05-27)
-- Phase 1 + Phase 2 开发完成
-- **Phase 3: 周报/月报功能已完成** — GUI 新增报告类型选择器，支持日报/周报/月报切换
-- GUI 操作面板已实现（tkinter）
-- 已打包为 `Personal_Work_Blackbox_v2.2/`（纯 exe 运行目录，2026-05-27 重新打包）
-- 智谱 API Key 已配置，glm-4.5-flash 可用，glm-4.7 待充值后切换
-- LLM 调用容错体系（重试+降级+网络诊断+自动补生成）
-- 已完成实际使用测试（5月14日~5月26日完整采集+AI日报生成验证通过）
-- 数据库已合并为单一完整库（5/14~5/26，含 7 份日报）
-- 目录已整理：文档归 docs/，日志归 data/logs/，v2.2 精简为纯运行目录
-
-## 目录结构
+## 目录结构（关键）
 ```
-轻量化键盘记录工具/
-├── config/              # 配置文件
-│   ├── config.yaml
-│   ├── config.example.yaml
-│   └── prompts/         # 自定义提示词模板（预留）
-├── data/                # 统一数据目录
-│   ├── blackbox.db      # 主数据库（已合并，5/14~5/26 完整数据）
-│   └── logs/            # 所有历史日志 + AI 日报
-├── docs/                # 项目文档
-│   ├── PRD_Personal_Work_Blackbox_v2.md
-│   ├── 轻量化数据采集.docx
-│   ├── work_report.html
-│   └── 使用说明.md
-├── scripts/             # 辅助脚本
-├── src/                 # 源码
-├── tests/               # 测试（164 个）
-├── Personal_Work_Blackbox_v2.2/  # 精简 exe 运行目录
-│   ├── PersonalWorkBlackbox.exe
-│   ├── config/
-│   ├── data/            # 含合并后的数据库副本
-│   ├── scripts/
-│   └── 使用说明.md
-├── blackbox.spec
-├── CLAUDE.md
-├── pyproject.toml
-├── README.md
-├── requirements.txt
-└── 启动.bat
+src/                  # 后端：collector / processor / storage / ai / ui / config
+  collector/          # keyboard_hook(ctypes) / window / clipboard / idle
+  processor/          # input_buffer / privacy_filter / session_manager / app_classifier / focus_mode
+  storage/            # database / models / data_exporter / report_exporter(单文件 HTML+SVG)
+  ai/                 # llm_client / prompt_engine / report_generator / todo_extractor / timedist_extractor
+  ui/                 # web_ui / web_api / rest_api / notification
+界面优化/优化图设计为macOS风格/  # React 前端源码（Vite + TS + Tailwind 4）
+web_frontend/         # 前端构建产物（打包输入）
+config/               # config.yaml
+data/                 # blackbox.db + logs/ + exports/ + backup_历史库_*/（归档永不删）
+docs/                 # PRD / 使用说明 / 截图 / 归档
+tests/                # pytest
 ```
 
-## LLM 容错机制
-- **指数退避重试**: 单个提供商最多重试 3 次（延迟 5→15→30 秒），仅网络类错误重试
-- **自动降级**: 默认提供商失败后按 ollama→glm→deepseek→openai 顺序尝试
-- **网络预检**: `diagnose()` 方法可快速区分"配置错误"和"网络不通"
-- **自动补生成**: 引擎启动时扫描最近 7 天，对有数据无日报的日期自动补生成
-- **GUI 防抖**: 生成按钮加 `_generating` 标志，防止连点创建多线程
-
-## 周报/月报功能
-- **触发方式**: GUI 报告类型下拉选择「周报」或「月报」，选择该周期内任意日期，自动计算自然周/月
-- **数据来源**: 基于该周期内已有的日报（`daily_reports`）汇总，缺失日报的日期在报告中标注
-- **持久化**: 新表 `period_reports`（`report_type` + `period_start` 唯一），同一周期覆盖旧版
-- **文件保存**: 周报 `{周一日期}_weekly.md`，月报 `{yyyy-MM}_monthly.md`
-- **详细 PRD**: `docs/PRD_周报月报功能.md`
-
-## 已知待改进项
-- 中文 IME: 仅捕获拼音，需接入 UI Automation 获取最终文本
-- API Key 明文存储在 config.yaml 中
-- config/prompts/ 自定义模板目录已创建但为空
-- 采集层和 UI 层缺少测试覆盖
-- BlackboxEngine 核心协调逻辑缺少测试
-- 未使用版本控制（待初始化 Git）— *已初始化 Git（2026-05-27）*
+## 重要约定（务必遵守）
+- **唯一工作目录**：`E:\工作\AI CLOUDE\职迹\轻量化键盘记录工具\`（v4.2.0 主线；原「- 副本」已改名去后缀，旧版 v3.1 主目录已删）
+- **会话交接**：收尾时更新 `HANDOVER.md`（7 节固定结构，覆盖不堆历史）；新会话第一步读 HANDOVER.md
+- **新 DB 表**通过 SCHEMA_SQL；**新字段**通过 `_migrate_schema`（ADD COLUMN）
+- 长时 LLM 操作用 task_id + 轮询模式（见 web_api `_tasks`）
+- 单文件 HTML 偏好：内联 CSS/JS，转义 `</script>`→`<\/script>`，无外部 src/href
+- 文档/注释/commit 全用中文

@@ -1,5 +1,33 @@
 # Changelog
 
+## v4.2.0 - 2026-08-08 — 报告可视化 + 导出能力
+
+### 报告导出（HTML / PDF）
+- 新增 `src/storage/report_exporter.py`：将报告 Markdown 渲染为自包含单文件 HTML（内联 CSS/SVG，无外部依赖，可离线打开、微信/邮件直发）
+- macOS 风格卡片化排版：Hero 标题区（类型胶囊 + 日期 + 模型元信息）+ 章节正文 + 时间分布环形图 + 页脚
+- h2 章节标题自动注入 emoji 图标（概览📋/完成✅/沟通💬/待办📌/时间分布📊/效率⚡…）
+- 内置 `@media print`：浏览器 Ctrl+P 直接打出排版干净的 PDF，环形图静态 SVG 必显示（不依赖 JS 渲染）
+- `export_report` 桥接 API：导出前自动提取时间分布，LLM 失败则导出无图版（优雅降级）
+
+### 待办导出（CSV）
+- `DataExporter.export_todos_csv`：待办列表导出为 CSV，UTF-8 BOM 编码（Excel 中文不乱码）
+- 字段含标题/状态/优先级/来源/截止日期/是否草稿/来源引用，状态与优先级做中文映射
+
+### 时间分布可视化（环形图）
+- 新增 `src/ai/timedist_extractor.py`：复用 todo_extractor 模式，LLM 从报告"时间分布"章节提取 `[{"category","minutes","percent"}]`，容错 JSON 解析 + 百分比归一化
+- `render_donut_svg`：纯 SVG 环形图（stroke-dasharray 扇形 + 图例），后端一处生成、导出 HTML 与 app 内共用；不内联约 1MB JS 库，单文件 HTML 保持轻量
+- app 内报告页：报告加载后调 `analyze_report`（task 轮询）渲染环形图，LLM 失败静默隐藏图区
+- 数据源决策：DB sessions 表无 category 列、报告文字格式 8 种不统一，故采用 LLM 提取（新旧报告都管，与文字一致）
+
+### 修改文件
+- 新增：`src/ai/timedist_extractor.py`、`src/storage/report_exporter.py`
+- 修改：`src/ai/prompt_engine.py`（+时间分布提取 prompt）、`src/main.py`（+extract_timedist_from_report）、`src/ui/web_api.py`（+analyze_report / 增强 export_report）、`src/storage/data_exporter.py`（+export_todos_csv）
+- 前端：`界面优化/优化图设计为macOS风格/src/app/App.tsx`（报告页环形图 + 导出按钮）、`src/lib/pywebview.ts`（+analyze_report 签名与 mock）
+- 测试：`tests/test_export.py`（+SVG/解析/CSV 共 18 个新测试）
+
+### 测试
+- 全量 291 passed（含新增 TestDonutSvg 5 / TestTimedistParse 7 / TestTodosCsv 6）
+
 ## v4.1.0 - 2026-07-08 — 键盘捕获引擎重构 + 关于页面
 
 ### 键盘捕获引擎彻底重构（核心修复）
