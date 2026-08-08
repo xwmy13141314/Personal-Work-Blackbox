@@ -12,6 +12,9 @@ blackbox.log
 # ==================== 配置（含敏感信息） ====================
 config/config.yaml
 config/config.local.yaml
+# 环境变量文件（可能含 API Key，禁止上传）
+.env
+.env.*
 # 保留 config.example.yaml 作为模板
 
 # v2.2 分发包中的敏感文件
