@@ -4,9 +4,9 @@ import logo from "@/assets/logo.png";
 
 // ==================== 关于视图 ====================
 
-const APP_VERSION = "4.0.0";
+const APP_VERSION = "4.2.0";
 const APP_TAGLINE = "您的私有工作黑盒";
-const CONTACT_EMAIL = "xwmy134@gmail.com";
+const CONTACT_EMAIL = "xwmy1314@gmail.com";
 const GITHUB_URL = "https://github.com/xwmy13141314/Personal-Work-Blackbox";
 
 export function AboutView() {
