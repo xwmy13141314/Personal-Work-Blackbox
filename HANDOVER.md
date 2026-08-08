@@ -37,8 +37,8 @@ v4.2.0（报告可视化 + 导出）已完成并提交；待办闭环（v4.1.x�
 1. ~~文件夹改名~~ **已完成（2026-08-08）**：目录已从「轻量化键盘记录工具 - 副本」改名为「轻量化键盘记录工具」；残留路径引用（项目 CLAUDE.md / 本文件 §1§5 / 全局记忆 worktrace / 全局 CLAUDE.md 项目索引）已同步。
 2. 数据备份 `职迹\轻量化键盘记录工具_v3.1旧版_数据备份_20260808.zip`（7.6 MB）：确认 v4.2.0 运行正常后可删
 3. 第三期规划项（见 `docs/PRD_WorkTrace_v4.md` §2）：跨平台 macOS / 浏览器扩展 / IDE 插件 / 自动更新 / i18n —— 均未实施
-4. 既有 bug：sessions 表缺 category 列（分类/时间分布统计走 LLM 提取绕开）；前端 production build rollup 崩溃（`rm -rf node_modules && npm install` 重装可修）
-5. 可选优化：周/月报时间分布（当前仅日报验证过）
+4. 既有 bug：sessions 表缺 category 列（分类/时间分布统计走 LLM 提取绕开）。~~前端 production build rollup 崩溃~~ **已修复（2026-08-08）**：崩溃已自愈（node_modules 7 月重装后不再复现）；并根治了 vite `emptyOutDir` 对中文路径不生效——根因是 node `fs.rmSync` 在 Windows 中文路径下静默失败，`build:desktop` 已改为前置 PowerShell `Remove-Item` 清空 `web_frontend`（实测每次 build 后 assets 只剩 live 产物）
+5. ~~可选优化：周/月报时间分布~~ **已验证可用（2026-08-08）**：链路本就完整（`extract_timedist_from_report` daily/weekly/monthly 三分支齐全，前端 `analyze()` 透传 reportType），weekly 实测端到端通过（2026-05-25 周报 → 4 类别提取 + SVG 渲染正常）；monthly 库内 0 条未实测但代码同构，预计可用
 
 ## 5. 关键文件 & 环境
 - 技术栈：Python 3.13（ctypes WH_KEYBOARD_LL / pywebview / pywin32）+ React18/TS/Tailwind4/Vite6 + SQLite(WAL) + OpenAI 兼容 LLM（默认智谱 GLM，降级链 ollama→glm→deepseek→openai）
@@ -54,7 +54,7 @@ v4.2.0（报告可视化 + 导出）已完成并提交；待办闭环（v4.1.x�
 - **别用 ECharts 做报告图**：PDF 走 window.print()，JS 渲染打印会丢图；用纯 SVG
 - **DB 无 category 列**：sessions 表缺该列，分类统计/时间分布不能走 DB，用 LLM 从报告提取
 - **LLM 纯文本输出**：结构化提取用「prompt 要求 JSON + 后端容错解析」，别依赖 response_format
-- **production build 崩溃（既有，与功能无关）**：rollup 阶段 exit 9/127，`rm -rf node_modules && npm install` 重装可修；vite transform 全过 = 代码正确
+- **Windows 中文路径下 node fs 删除静默失败**：node `fs.rmSync` 与 vite `emptyOutDir` 对含中文路径（本项目 `E:\工作\...`）静默失败——不报错、不删除，致 build 产物死文件堆积进 exe。已修：`build:desktop` 前置 PowerShell `Remove-Item`（.NET 原生，对中文路径有效）+ `; exit 0`（不加则 `SilentlyContinue` 使退出码=1，会阻断 `&&` 后的 vite）。**Windows 删中文路径一律用 PowerShell / bash `rm`，别用 node fs**
 - **IDE 别名误报**：cwd 不在前端项目根时，TS 语言服务器对 `@/` 报假阳性，以 vite build 为准
 - **打包前**先关运行中的 WorkTrace.exe（Windows 文件锁）
 - 新 DB 表走 `SCHEMA_SQL`，新字段走 `_migrate_schema`（ADD COLUMN）；长时 LLM 操作用 task_id + 轮询（见 web_api `_tasks`）

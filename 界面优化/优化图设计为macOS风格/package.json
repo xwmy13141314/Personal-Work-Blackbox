@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
-    "build:desktop": "vite build --outDir ../../web_frontend --emptyOutDir",
+    "build:desktop": "powershell -NoProfile -Command \"Remove-Item -Recurse -Force '..\\..\\web_frontend' -ErrorAction SilentlyContinue; exit 0\" && vite build --outDir ../../web_frontend --emptyOutDir",
     "dev": "vite"
   },
   "dependencies": {

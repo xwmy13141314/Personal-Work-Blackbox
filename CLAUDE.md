@@ -57,3 +57,4 @@ tests/                # pytest
 - 长时 LLM 操作用 task_id + 轮询模式（见 web_api `_tasks`）
 - 单文件 HTML 偏好：内联 CSS/JS，转义 `</script>`→`<\/script>`，无外部 src/href
 - 文档/注释/commit 全用中文
+- **Windows 中文路径删除用 PowerShell / bash `rm`，别用 node fs**：node `fs.rmSync` 与 vite `emptyOutDir` 对 `E:\工作\...` 这类中文路径静默失败（不报错、不删除）；详见 HANDOVER §6
