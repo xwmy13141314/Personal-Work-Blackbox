@@ -171,6 +171,7 @@ class BlackboxEngine:
         # AI 摘要层
         self._report_generator = None
         self._todo_extractor = None
+        self._timedist_extractor = None
         self._init_ai_layer()
 
         # REST API 服务器
@@ -372,6 +373,13 @@ class BlackboxEngine:
                 llm_client=llm_client,
                 prompt_engine=prompt_engine,
             )
+
+            from src.ai.timedist_extractor import TimeDistExtractor
+            self._timedist_extractor = TimeDistExtractor(
+                db=self._db,
+                llm_client=llm_client,
+                prompt_engine=prompt_engine,
+            )
             logger.info("AI 摘要层已初始化，提供商: %s", ai_config.get("default_provider"))
 
             # 自动补生成缺失的日报
@@ -535,6 +543,46 @@ class BlackboxEngine:
 
         logger.info("从 %s 报告提取待办 %d 条，入库 %d 条", report_type, len(todos), inserted)
         return {"ok": True, "extracted": inserted}
+
+    def extract_timedist_from_report(self, report_type: str, date: str) -> dict:
+        """从报告中提取时间分布数据（供报告页环形图 / 导出 HTML 使用）
+
+        Args:
+            report_type: daily / weekly / monthly
+            date: 报告对应日期（周期报告传该周期内任意一天）
+
+        Returns:
+            {"ok": bool, "time_dist": [{"category","minutes","percent"}, ...], "error": str?}
+        """
+        if not getattr(self, "_timedist_extractor", None):
+            return {"ok": False, "error": "AI 层未初始化", "time_dist": []}
+        if not self._db.is_connected:
+            return {"ok": False, "error": "数据库未连接", "time_dist": []}
+
+        # 1. 取报告文本
+        if report_type == "daily":
+            record = self._db.query_daily_report(date)
+        elif report_type in ("weekly", "monthly"):
+            from src.ai.report_generator import _week_range, _month_range
+            if report_type == "weekly":
+                period_start, _ = _week_range(date)
+            else:
+                period_start, _ = _month_range(date)
+            record = self._db.query_period_report(report_type, period_start)
+        else:
+            return {"ok": False, "error": f"未知报告类型: {report_type}", "time_dist": []}
+
+        if not record or not getattr(record, "structured_report", ""):
+            return {"ok": False, "error": "未找到报告，请先生成报告", "time_dist": []}
+
+        # 2. 提取（复用 LLMClient 重试降级）
+        try:
+            time_dist = self._timedist_extractor.extract_sync(record.structured_report)
+        except Exception:
+            logger.exception("时间分布提取失败")
+            return {"ok": False, "error": "时间分布提取失败，请检查网络与 API 配置", "time_dist": []}
+
+        return {"ok": True, "time_dist": time_dist}
 
     def get_period_report(self, report_type: str, date: str | None = None):
         """查询已有的周报/月报"""

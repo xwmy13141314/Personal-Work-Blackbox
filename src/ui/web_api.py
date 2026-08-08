@@ -764,6 +764,39 @@ class BlackboxAPI:
             logger.exception("导出数据失败")
             return {"ok": False, "error": str(e)}
 
+    def analyze_report(self, report_type: str, date: str) -> dict:
+        """异步提取报告时间分布并生成环形图 SVG：立即返回 task_id，前端轮询 get_task_status
+
+        结果 result: {"time_dist": [...], "svg": "..."}
+        LLM 失败/无数据时 result.time_dist 为空、svg 为空串（前端隐藏图区）。
+        """
+        with self._lock:
+            self._task_seq += 1
+            task_id = f"task-{self._task_seq}"
+            self._tasks[task_id] = {"status": "pending", "result": None, "error": None}
+        threading.Thread(
+            target=self._analyze_report_worker,
+            args=(task_id, report_type, date),
+            daemon=True,
+            name=f"AnalyzeReport-{task_id}",
+        ).start()
+        return {"task_id": task_id}
+
+    def _analyze_report_worker(self, task_id: str, report_type: str, date: str):
+        """时间分布提取工作线程"""
+        try:
+            from src.storage.report_exporter import render_donut_svg
+
+            self._set_task(task_id, status="running")
+            result = self._engine.extract_timedist_from_report(report_type, date)
+            time_dist = result.get("time_dist", []) if result.get("ok") else []
+            svg = render_donut_svg(time_dist) if time_dist else ""
+            self._set_task(task_id, status="done",
+                           result={"time_dist": time_dist, "svg": svg})
+        except Exception as e:
+            logger.exception("时间分布提取工作线程异常")
+            self._set_task(task_id, status="failed", error=str(e))
+
     def export_report(self, format: str, report_type: str, date: str) -> dict:
         """导出报告为单文件 HTML（PDF 走前端 window.print，不经此接口）
 
@@ -782,6 +815,15 @@ class BlackboxAPI:
             if format != "html":
                 return {"ok": False, "error": "PDF 请点「导出 PDF」用打印另存"}
 
+            # 尝试提取时间分布生成环形图（失败降级为无图，不阻断导出）
+            time_dist = []
+            try:
+                td_result = self._engine.extract_timedist_from_report(report_type, date)
+                if td_result.get("ok"):
+                    time_dist = td_result.get("time_dist", [])
+            except Exception:
+                logger.exception("导出时提取时间分布失败，导出无图版本")
+
             type_label = {"daily": "日报", "weekly": "周报", "monthly": "月报"}.get(report_type, "报告")
             title = f"职迹{type_label} · {date}"
             parts = []
@@ -796,7 +838,7 @@ class BlackboxAPI:
             filename = f"export_{report_type}_{date}_report.html"
             path = export_dir / filename
             path.write_text(
-                render_report_html(rep["markdown"], title, subtitle),
+                render_report_html(rep["markdown"], title, subtitle, time_dist=time_dist),
                 encoding="utf-8",
             )
             return {"ok": True, "path": str(path), "filename": filename}

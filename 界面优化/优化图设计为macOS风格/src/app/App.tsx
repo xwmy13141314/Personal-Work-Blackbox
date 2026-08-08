@@ -74,6 +74,8 @@ export default function App() {
     msg: "",
   });
   const [exportNotice, setExportNotice] = useState<{ kind: "ok" | "err"; msg: string } | null>(null);
+  const [chartSvg, setChartSvg] = useState("");
+  const [chartState, setChartState] = useState<"idle" | "loading" | "done">("idle");
 
   // 导出报告为 HTML（后端渲染单文件，可离线/微信发送）
   const exportHtml = async () => {
@@ -98,6 +100,44 @@ export default function App() {
     window.addEventListener("afterprint", cleanup);
     window.print();
     setTimeout(() => style.remove(), 2000); // 兜底：部分 webview 不触发 afterprint
+  };
+
+  // 分析时间分布（轮询任务，LLM 提取后返回环形图 SVG）
+  const analyze = async () => {
+    if (!api) return;
+    setChartState("loading");
+    setChartSvg("");
+    try {
+      const { task_id } = await api.analyze_report(reportType, selectedDate);
+      const MAX_POLL = 60;
+      const poll = async (attempt: number) => {
+        if (attempt >= MAX_POLL) {
+          setChartState("idle");
+          return;
+        }
+        const t = await api.get_task_status(task_id);
+        if (!t) {
+          setChartState("idle");
+          return;
+        }
+        if (t.status === "done") {
+          const svg = t.result?.svg || "";
+          if (svg) {
+            setChartSvg(svg);
+            setChartState("done");
+          } else {
+            setChartState("idle"); // 无时间分布数据，静默隐藏
+          }
+        } else if (t.status === "failed") {
+          setChartState("idle"); // 失败静默降级，不报错
+        } else {
+          setTimeout(() => poll(attempt + 1), 1000);
+        }
+      };
+      setTimeout(() => poll(1), 500);
+    } catch {
+      setChartState("idle");
+    }
   };
 
   // 视图与搜索状态
@@ -150,6 +190,17 @@ export default function App() {
       cancelled = true;
     };
   }, [api, reportType, selectedDate]);
+
+  // 报告加载成功后分析时间分布（generate 生成新报告后也会重跑）
+  useEffect(() => {
+    if (!api || !report?.markdown) {
+      setChartState("idle");
+      setChartSvg("");
+      return;
+    }
+    analyze();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api, reportType, selectedDate, report?.markdown]);
 
   const refreshStatus = async () => {
     if (api) setStatus(await api.get_status());
@@ -433,6 +484,7 @@ export default function App() {
                   {reportLoading ? (
                     <p className="text-[12px] text-[var(--wt-text-muted)] py-8 text-center">加载中...</p>
                   ) : report?.markdown ? (
+                    <>
                     <div
                       className="text-[12.5px] text-[var(--wt-text)] leading-relaxed
                         [&_h1]:text-[17px] [&_h1]:font-semibold [&_h1]:mt-1 [&_h1]:mb-2
@@ -451,6 +503,22 @@ export default function App() {
                     >
                       <ReactMarkdown remarkPlugins={[remarkGfm]}>{report.markdown}</ReactMarkdown>
                     </div>
+                    {chartState === "loading" && (
+                      <div className="mt-4 pt-4 border-t border-black/10 flex items-center gap-2 text-[11.5px] text-[var(--wt-text-muted)]">
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        正在分析时间分布...
+                      </div>
+                    )}
+                    {chartState === "done" && chartSvg && (
+                      <div className="mt-4 pt-4 border-t border-black/10">
+                        <p className="text-[12px] font-semibold text-[var(--wt-text)] mb-2 flex items-center gap-1.5">
+                          <BarChart3 className="w-3.5 h-3.5 text-[var(--wt-accent)]" />
+                          时间分布
+                        </p>
+                        <div dangerouslySetInnerHTML={{ __html: chartSvg }} className="max-w-[480px]" />
+                      </div>
+                    )}
+                    </>
                   ) : (
                     <Empty icon={FileText} text={`该${tabTitle}暂无内容`} hint="点击右上角「生成报告」创建" />
                   )}

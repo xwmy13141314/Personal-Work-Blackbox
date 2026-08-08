@@ -141,6 +141,36 @@ BUILTIN_TODO_USER_TEMPLATE = """请从以下报告中提取待办事项。
 只输出 JSON 数组本身，不要包裹在代码块中，不要有任何解释。"""
 
 
+# ==================== 时间分布提取 Prompt ====================
+
+BUILTIN_TIMEDIST_EXTRACT_SYSTEM = """你是一个工作时间分布提取助手。你的任务是从工作日报中识别用户当天各类工作活动及其时间占比。
+
+规则：
+1. 识别 3~7 个主要的工作类别（如：开发编码、沟通会议、文档撰写、邮件处理、调研学习、事务处理等），不要过细
+2. 类别名称简短（2~6 字），概括这一类活动
+3. minutes 为该类工作的大致分钟数，percent 为占总工作时间的百分比（0~100）
+4. 各类 percent 之和应接近 100
+5. 只基于报告中明确出现的时间分布信息，不要编造
+6. 输出必须是合法的 JSON 数组，不要输出任何其他文字
+7. 若报告中没有任何时间分布信息，输出空数组 []"""
+
+BUILTIN_TIMEDIST_USER_TEMPLATE = """请从以下工作日报中提取时间分布数据。
+
+## 报告内容
+{report_text}
+
+## 输出格式
+输出一个 JSON 数组，每个元素代表一个工作类别，字段如下：
+- category：类别名称（字符串，2~6 个字）
+- minutes：分钟数（整数）
+- percent：占总工作时间的百分比（0~100 的整数）
+
+示例：
+[{{"category": "开发编码", "minutes": 180, "percent": 45}}, {{"category": "沟通会议", "minutes": 80, "percent": 20}}]
+
+只输出 JSON 数组本身，不要包裹在代码块中，不要有任何解释。"""
+
+
 class PromptEngine:
     """Prompt 模板引擎
 
@@ -159,6 +189,8 @@ class PromptEngine:
         self._monthly_user = BUILTIN_MONTHLY_USER_TEMPLATE
         self._todo_extract_system = BUILTIN_TODO_EXTRACT_SYSTEM
         self._todo_extract_user = BUILTIN_TODO_USER_TEMPLATE
+        self._timedist_extract_system = BUILTIN_TIMEDIST_EXTRACT_SYSTEM
+        self._timedist_extract_user = BUILTIN_TIMEDIST_USER_TEMPLATE
         self._load_templates()
 
     def _load_templates(self):
@@ -309,6 +341,21 @@ class PromptEngine:
         user_content = self._todo_extract_user.format(report_text=report_text or "（空报告）")
         return [
             {"role": "system", "content": self._todo_extract_system},
+            {"role": "user", "content": user_content},
+        ]
+
+    def build_timedist_extract_prompt(self, report_text: str) -> list[dict[str, str]]:
+        """构建时间分布提取 Prompt
+
+        Args:
+            report_text: 日报/周报/月报的 Markdown 文本
+
+        Returns:
+            消息列表 [{"role": "system"|"user", "content": "..."}]
+        """
+        user_content = self._timedist_extract_user.format(report_text=report_text or "（空报告）")
+        return [
+            {"role": "system", "content": self._timedist_extract_system},
             {"role": "user", "content": user_content},
         ]
 

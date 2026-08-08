@@ -5,9 +5,10 @@ from __future__ import annotations
 import csv
 import re
 
+from src.ai.timedist_extractor import TimeDistExtractor
 from src.storage.data_exporter import DataExporter
 from src.storage.models import TodoRecord
-from src.storage.report_exporter import render_report_html
+from src.storage.report_exporter import render_donut_svg, render_report_html
 
 
 def _todo(title: str, **kw) -> TodoRecord:
@@ -22,9 +23,10 @@ def _todo(title: str, **kw) -> TodoRecord:
 class TestReportHtml:
     def test_renders_headings(self):
         h = render_report_html("# 大标题\n## 二级\n### 三级", "T")
-        assert "<h1>大标题</h1>" in h
-        assert "<h2>二级</h2>" in h
-        assert "<h3>三级</h3>" in h
+        assert "<h1>大标题</h1>" in h  # h1 保留（Hero 用 div）
+        assert "<h2" in h and "二级" in h  # h2 注入 emoji 图标 span
+        assert "h2-ico" in h
+        assert "<h3>三级</h3>" in h  # h3 不注入图标
 
     def test_renders_list(self):
         h = render_report_html("- 甲\n- 乙\n- 丙", "T")
@@ -71,6 +73,90 @@ class TestReportHtml:
         h = render_report_html("# x", "T")
         assert not re.search(r'src="https?://', h)  # 无外链资源
         assert "<link" not in h  # 无外部样式表
+
+
+# ==================== 时间分布环形图 ====================
+
+
+class TestDonutSvg:
+    def test_renders_slices_and_legend(self):
+        data = [
+            {"category": "开发编码", "minutes": 180, "percent": 45},
+            {"category": "沟通会议", "minutes": 80, "percent": 20},
+        ]
+        svg = render_donut_svg(data)
+        assert svg.startswith("<svg")
+        assert svg.endswith("</svg>")
+        assert svg.count("<circle") == 2  # 两个扇形
+        assert "开发编码" in svg  # 图例含类别名
+        assert "45%" in svg
+
+    def test_empty_data_returns_empty(self):
+        assert render_donut_svg([]) == ""
+        assert render_donut_svg(None) == ""
+
+    def test_zero_percent_filtered(self):
+        data = [
+            {"category": "有值", "minutes": 100, "percent": 50},
+            {"category": "零值", "minutes": 0, "percent": 0},
+        ]
+        svg = render_donut_svg(data)
+        assert svg.count("<circle") == 1  # 零占比被过滤
+        assert "零值" not in svg
+
+    def test_center_total_duration(self):
+        data = [{"category": "工作", "minutes": 90, "percent": 100}]
+        svg = render_donut_svg(data)
+        assert "1h30m" in svg  # 90 分钟 = 1h30m
+
+    def test_category_escaped(self):
+        data = [{"category": "<开发>", "minutes": 60, "percent": 100}]
+        svg = render_donut_svg(data)
+        assert "<开发>" not in svg  # 已转义，不被当标签
+        assert "&lt;开发&gt;" in svg
+
+
+# ==================== 时间分布提取解析 ====================
+
+
+class TestTimedistParse:
+    def test_plain_json_array(self):
+        content = '[{"category":"开发","minutes":120,"percent":50},{"category":"沟通","minutes":120,"percent":50}]'
+        result = TimeDistExtractor.parse_timedist_json(content)
+        assert len(result) == 2
+        assert result[0]["category"] == "开发"
+        assert result[0]["minutes"] == 120
+
+    def test_code_fence_wrapped(self):
+        content = '```json\n[{"category":"编码","minutes":60,"percent":100}]\n```'
+        result = TimeDistExtractor.parse_timedist_json(content)
+        assert len(result) == 1
+        assert result[0]["category"] == "编码"
+
+    def test_extra_text_around(self):
+        content = '好的，这是结果：\n[{"category":"A","minutes":30,"percent":30}]\n以上。'
+        result = TimeDistExtractor.parse_timedist_json(content)
+        assert len(result) == 1
+        assert result[0]["category"] == "A"
+
+    def test_empty_array(self):
+        assert TimeDistExtractor.parse_timedist_json("[]") == []
+
+    def test_garbage_returns_empty(self):
+        assert TimeDistExtractor.parse_timedist_json("无时间分布信息") == []
+
+    def test_missing_category_dropped(self):
+        content = '[{"minutes":60,"percent":100},{"category":"B","minutes":30,"percent":0}]'
+        result = TimeDistExtractor.parse_timedist_json(content)
+        cats = [r["category"] for r in result]
+        assert "B" in cats  # 缺 category 的被丢弃，B 保留
+
+    def test_percent_normalized(self):
+        # 总和 200，严重偏离 100，按比例缩放
+        content = '[{"category":"A","minutes":100,"percent":100},{"category":"B","minutes":100,"percent":100}]'
+        result = TimeDistExtractor.parse_timedist_json(content)
+        total = sum(r["percent"] for r in result)
+        assert 95 <= total <= 105  # 归一化后接近 100
 
 
 # ==================== 待办 CSV ====================
