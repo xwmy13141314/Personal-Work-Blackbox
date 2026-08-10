@@ -9,7 +9,7 @@
 - **键盘捕获**：ctypes 直接调用 Windows API（WH_KEYBOARD_LL）+ 专用线程独立消息泵，**不用 pynput**（打包环境静默回退 _dummy 后端）。v4.1 重构
 - **中文 IME**：WH_GETMESSAGE 钩子 + ImmGetCompositionStringW 主动轮询组合结果
 - **图表方案**：**纯 SVG 环形图，不用 ECharts**。PDF 走 window.print()，静态 SVG 必显示；单文件 HTML 不内联约 1MB JS；后端一处生成，导出 HTML 与 app 内共用
-- **时间分布数据源**：LLM 从报告文本提取（复用 todo_extractor 模式），**不用 DB 分类统计**（sessions 表无 category 列）
+- **时间分布数据源**：**DB 分类统计优先 + LLM 降级**（`query_category_stats` → `category_stats_to_timedist`，sessions.category 列本就存在；DB 无数据才回退 LLM 从报告文本提取，无报告也能出图）
 - **LLM 结构化输出**：纯文本 + "prompt 要求 JSON + 后端容错解析"，**不依赖 response_format**
 - **存储**：SQLite WAL + 每日 Markdown 导出；可选 SQLCipher 加密
 - **生命周期**：stop() 停采集但留 DB 连接（支持后续报告生成），shutdown() 才完全关闭（仅应用退出时）
