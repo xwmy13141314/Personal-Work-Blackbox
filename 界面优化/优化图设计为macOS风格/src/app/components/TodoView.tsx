@@ -370,7 +370,7 @@ export function TodoView({ api, date }: { api: BlackboxApi | null; date: string 
               </div>
               <div className="min-w-0">
                 <p className="text-[12px] font-semibold text-[var(--wt-text)]">AI 提取了 {drafts.length} 条待办待确认</p>
-                <p className="text-[11px] text-[var(--wt-text-muted)]">来源：日报「待办跟进」章节 · 请确认后入库</p>
+                <p className="text-[11px] text-[var(--wt-text-muted)]">来源：{sourceMeta(drafts[0]).label} · 请确认后入库</p>
               </div>
               <div className="ml-auto flex items-center gap-1 text-[11px] text-[var(--wt-text-muted)]">
                 {draftOpen ? "收起" : "展开"}

@@ -6,7 +6,7 @@
 职迹 WorkTrace：纯本地、隐私优先的个人 AI 工作日志工具。三层采集（键盘含中文 IME + 窗口切换 + 剪贴板）→ 隐私过滤 → LLM 日报/周报/月报 + 待办闭环 + 报告可视化 + 导出。工作目录（唯一主线，v4.2.0，git main）：`E:\工作\AI CLOUDE\职迹\轻量化键盘记录工具\`。
 
 ## 2. 当前任务
-v4.2.0 全交付（报告可视化 + 导出 / 待办闭环 / windowed exe / 关于页 / GitHub README 截图，见 §3）。**本会话（2026-08-10）**：报告「时间分布环形图」数据源切换——从「LLM 从报告文本提取」改为「**DB 分类统计优先 + LLM 降级**」。探索发现 category DB 基础设施早已完整（sessions.category 列 / 写入时分类 / `query_category_stats` / `backfill_categories` 全在），但环形图没接上、仍走 LLM（`get_category_stats` 前端 bridge 定义了却无组件调用）。本次接线：新增纯函数 `category_stats_to_timedist`（`timedist_extractor.py`）+ 改 `extract_timedist_from_report`（`main.py`）DB 优先、无数据降级 LLM；报告页环形图与导出 HTML 自动受益，**无报告也能出图**。测试 298 passed（+6）。下一步：用户起 app 端到端验证环形图实际效果 + 决定是否轮换 key（§4.0 安全遗留）。
+v4.2.0 全交付（报告可视化 + 导出 / 待办闭环 / windowed exe / 关于页 / GitHub README 截图，见 §3）。**本会话（2026-08-10）**：报告「时间分布环形图」数据源切换——从「LLM 从报告文本提取」改为「**DB 分类统计优先 + LLM 降级**」。探索发现 category DB 基础设施早已完整（sessions.category 列 / 写入时分类 / `query_category_stats` / `backfill_categories` 全在），但环形图没接上、仍走 LLM（`get_category_stats` 前端 bridge 定义了却无组件调用）。本次接线：新增纯函数 `category_stats_to_timedist`（`timedist_extractor.py`）+ 改 `extract_timedist_from_report`（`main.py`）DB 优先、无数据降级 LLM；报告页环形图与导出 HTML 自动受益，**无报告也能出图**。测试 298 passed（+6）。**同会话后续**：① 修草稿区来源显示 bug（`TodoView.tsx:373` 写死「日报」且无日期 → 动态 `sourceMeta(drafts[0]).label`，周报/月报也正确）；② 规划「待办看板增强 v4.3」——与 AI+采集融合的「任务镜像」（非独立通用看板），完整 PRD 落 `docs/PRD_待办看板_v4.3.md`，分 P1-P4，P1=AI 驱动状态看板。**下一步**：实现 P1（看板视图 + 拖拽 + 来源下钻），见 PRD §7；另用户可起 app 验证环形图 + 决定是否轮换 key（§4.0）。
 
 ## 3. 已完成进展
 
@@ -54,7 +54,13 @@ v4.2.0 全交付（报告可视化 + 导出 / 待办闭环 / windowed exe / 关�
 - [x] 改 `extract_timedist_from_report`（`src/main.py`）为 **DB 优先 + LLM 降级**：新增 `_timedist_from_db` 辅助（复用 `_week_range`/`_month_range` + `query_category_stats`），DB 有数据返回 `source:db`，无数据降级原 LLM 链路返回 `source:llm`；DB 提取前置（无报告也能出图）
 - [x] `tests/test_export.py` +6 纯函数单测（`TestDbTimedist`）；未改 database.py（`query_category_stats` 已就绪）/ 前端（接口契约不变）/ web_api.py
 
+**待办看板增强规划 + 草稿区修复（本会话 2026-08-10 后续）：**
+- [x] 草稿区来源显示 bug 修复（`TodoView.tsx:373`）：原写死「日报」且无日期 → 动态显示「日报/周报/月报 + MM/DD」，周报/月报提取不再误显「日报」
+- [x] 新增 `docs/PRD_待办看板_v4.3.md`：待办看板增强完整 PRD（融合 AI+采集，非独立看板），核心理念=任务镜像，分 P1-P4，P1 详写范围+验收
+
 ## 4. 下一步计划
+**📌 当前最高优先级**：待办看板增强 v4.3 P1（见 `docs/PRD_待办看板_v4.3.md` §7）—— AI 驱动状态看板（看板视图 + 拖拽 + 来源下钻），todos 加 `sort_order` 字段。
+
 0. ⚠️ **安全遗留**：旧 `settings.jpg` 的 `sk-` 片段仍残留在 git 历史（`c3690f3` 及之前）。最有效修复 = 去智谱控制台轮换该 API key（让历史泄露的 key 失效）；清理 git 历史（BFG / filter-repo）会重写提交 + 影响 v4.2.0 release tag，须用户确认才动
 1. ~~文件夹改名~~ **已完成（2026-08-08）**：目录已从「轻量化键盘记录工具 - 副本」改名为「轻量化键盘记录工具」；残留路径引用（项目 CLAUDE.md / 本文件 §1§5 / 全局记忆 worktrace / 全局 CLAUDE.md 项目索引）已同步。
 2. 数据备份 `职迹\轻量化键盘记录工具_v3.1旧版_数据备份_20260808.zip`（7.6 MB）：确认 v4.2.0 运行正常后可删
