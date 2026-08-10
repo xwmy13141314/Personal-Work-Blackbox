@@ -93,7 +93,7 @@ v4.2.0 全交付（报告可视化 + 导出 / 待办闭环 / windowed exe / 关�
 - **公开仓库（GitHub）勿含真实数据 / API key**：截图含真实工作内容（日报正文 / 真实文件名 / 待办）或 `sk-` key 一律不上传；`data/` 已 gitignore。本次删除了泄露 `sk-` 的旧 `settings.jpg`（当前版本已清，git 历史残留未清，见 §4）
 
 ## 7. 如何续上
-1. 读本文件 + `CLAUDE.md`
+1. 读本文件 + `CLAUDE.md` + `docs/PRD_待办看板_v4.3.md`（已定稿，用户审查通过）
 2. `python -m pytest -q` 确认 298 passed 基线
-3. 看 `docs/PRD_WorkTrace_v4.md` §2 第三期规划，按优先级选一项开干
+3. **当前任务 = 待办看板 P1**（见 PRD §7）：后端先行 —— `todos` 加 `sort_order` 字段（`database.py` 的 `_migrate_schema`）→ 旧数据回填 → `database.get_todo_stats(date)`（4 个 count）→ `web_api` 加 `reorder_todos` + 统计桥接 → pytest 绿；再做前端看板（三列布局 + 顶部统计卡片栏 + `@dnd-kit` 拖拽 + 来源下钻）
 4. 改前端先 `cd 界面优化/优化图设计为macOS风格 && npm run dev` 起 dev server
