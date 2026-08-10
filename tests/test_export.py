@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv
 import re
 
-from src.ai.timedist_extractor import TimeDistExtractor
+from src.ai.timedist_extractor import TimeDistExtractor, category_stats_to_timedist
 from src.storage.data_exporter import DataExporter
 from src.storage.models import TodoRecord
 from src.storage.report_exporter import render_donut_svg, render_report_html
@@ -208,3 +208,56 @@ class TestTodosCsv:
         assert data["是否草稿"] == "是"
         assert data["截止日期"] == "2026-08-09"
         assert data["来源引用"] == "2026-08-07"
+
+
+# ==================== DB 分类统计 → 时间分布 ====================
+
+
+class TestDbTimedist:
+    def test_normal_conversion(self):
+        items = [
+            {"category": "开发工具", "active_seconds": 3600, "icon": "💻"},  # 60min
+            {"category": "通讯社交", "active_seconds": 1800, "icon": "💬"},  # 30min
+        ]
+        result = category_stats_to_timedist(items)
+        assert len(result) == 2
+        assert result[0]["category"] == "开发工具"
+        assert result[0]["minutes"] == 60
+        assert result[0]["percent"] == 66.7  # 3600/5400
+        total_pct = sum(r["percent"] for r in result)
+        assert 99 <= total_pct <= 101  # 归一到 100
+
+    def test_zero_active_filtered(self):
+        items = [
+            {"category": "有活动", "active_seconds": 600},
+            {"category": "零活动", "active_seconds": 0},
+        ]
+        result = category_stats_to_timedist(items)
+        assert len(result) == 1
+        assert result[0]["category"] == "有活动"
+        assert result[0]["percent"] == 100.0
+
+    def test_empty_input(self):
+        assert category_stats_to_timedist([]) == []
+        assert category_stats_to_timedist(None) == []
+
+    def test_single_category_100_percent(self):
+        items = [{"category": "浏览器", "active_seconds": 7200}]
+        result = category_stats_to_timedist(items)
+        assert len(result) == 1
+        assert result[0]["percent"] == 100.0
+        assert result[0]["minutes"] == 120
+
+    def test_short_activity_min_one_minute(self):
+        # 30 秒活动 → round(0.5)=0，保底至少 1 分钟显示
+        items = [{"category": "短暂", "active_seconds": 30}]
+        result = category_stats_to_timedist(items)
+        assert result[0]["minutes"] == 1
+        assert result[0]["percent"] == 100.0
+
+    def test_all_zero_returns_empty(self):
+        items = [
+            {"category": "A", "active_seconds": 0},
+            {"category": "B", "active_seconds": 0},
+        ]
+        assert category_stats_to_timedist(items) == []

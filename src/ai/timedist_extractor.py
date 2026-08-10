@@ -154,3 +154,45 @@ def _normalize_percent(items: list[dict]) -> list[dict]:
     for it in items:
         it["percent"] = round(it["percent"] / total * 100, 1)
     return items
+
+
+def category_stats_to_timedist(items: list[dict]) -> list[dict]:
+    """DB 分类统计 → 环形图数据（纯函数，供 DB 优先路径使用）
+
+    items: db.query_category_stats 返回值，形如
+        [{"category","icon","session_count","active_seconds","idle_seconds"}, ...]
+    Returns: [{"category","minutes","percent"}, ...]（render_donut_svg 所需格式）
+
+    - 过滤 active_seconds <= 0 的类别
+    - minutes = round(active_seconds / 60)，至少 1（避免短活动显示 0m）
+    - percent 按 active_seconds 占比归一到 100（1 位小数）
+    """
+    if not items:
+        return []
+
+    rows: list[tuple[str, float]] = []
+    total = 0.0
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        try:
+            active = float(it.get("active_seconds", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if active <= 0:
+            continue
+        category = str(it.get("category", "")).strip() or "其他"
+        rows.append((category, active))
+        total += active
+
+    if not rows or total <= 0:
+        return []
+
+    return [
+        {
+            "category": cat,
+            "minutes": max(1, round(active / 60)),
+            "percent": round(active / total * 100, 1),
+        }
+        for cat, active in rows
+    ]

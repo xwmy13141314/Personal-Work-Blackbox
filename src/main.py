@@ -545,44 +545,81 @@ class BlackboxEngine:
         return {"ok": True, "extracted": inserted}
 
     def extract_timedist_from_report(self, report_type: str, date: str) -> dict:
-        """从报告中提取时间分布数据（供报告页环形图 / 导出 HTML 使用）
+        """提取时间分布数据（供报告页环形图 / 导出 HTML 使用）
+
+        数据源优先级：DB 分类统计（query_category_stats，基于真实前台活跃时长）
+        → 降级 LLM 从报告文本提取。DB 路径不依赖报告是否生成（无报告也能出图）。
 
         Args:
             report_type: daily / weekly / monthly
             date: 报告对应日期（周期报告传该周期内任意一天）
 
         Returns:
-            {"ok": bool, "time_dist": [{"category","minutes","percent"}, ...], "error": str?}
+            {"ok": bool, "time_dist": [{"category","minutes","percent"}, ...],
+             "source": "db"|"llm"?, "error": str?}
         """
-        if not getattr(self, "_timedist_extractor", None):
-            return {"ok": False, "error": "AI 层未初始化", "time_dist": []}
+        if report_type not in ("daily", "weekly", "monthly"):
+            return {"ok": False, "error": f"未知报告类型: {report_type}", "time_dist": []}
         if not self._db.is_connected:
             return {"ok": False, "error": "数据库未连接", "time_dist": []}
 
-        # 1. 取报告文本
+        # 1. DB 优先：按真实前台活跃时长统计
+        db_dist = self._timedist_from_db(report_type, date)
+        if db_dist:
+            logger.info("时间分布取自 DB 分类统计（%d 类）", len(db_dist))
+            return {"ok": True, "time_dist": db_dist, "source": "db"}
+
+        # 2. 降级：LLM 从报告文本提取
+        if not getattr(self, "_timedist_extractor", None):
+            return {"ok": False, "error": "AI 层未初始化", "time_dist": []}
+
         if report_type == "daily":
             record = self._db.query_daily_report(date)
-        elif report_type in ("weekly", "monthly"):
+        else:
             from src.ai.report_generator import _week_range, _month_range
             if report_type == "weekly":
                 period_start, _ = _week_range(date)
             else:
                 period_start, _ = _month_range(date)
             record = self._db.query_period_report(report_type, period_start)
-        else:
-            return {"ok": False, "error": f"未知报告类型: {report_type}", "time_dist": []}
 
         if not record or not getattr(record, "structured_report", ""):
             return {"ok": False, "error": "未找到报告，请先生成报告", "time_dist": []}
 
-        # 2. 提取（复用 LLMClient 重试降级）
         try:
             time_dist = self._timedist_extractor.extract_sync(record.structured_report)
         except Exception:
             logger.exception("时间分布提取失败")
             return {"ok": False, "error": "时间分布提取失败，请检查网络与 API 配置", "time_dist": []}
 
-        return {"ok": True, "time_dist": time_dist}
+        logger.info("时间分布取自 LLM 提取（%d 类）", len(time_dist))
+        return {"ok": True, "time_dist": time_dist, "source": "llm"}
+
+    def _timedist_from_db(self, report_type: str, date: str) -> list[dict] | None:
+        """从 DB 分类统计生成时间分布（DB 优先路径）
+
+        复用 query_category_stats（按 category 聚合 active_seconds），转成
+        render_donut_svg 所需格式。无有效数据或查询失败返回 None（交由调用方降级）。
+        """
+        from src.ai.report_generator import _week_range, _month_range
+        from src.ai.timedist_extractor import category_stats_to_timedist
+
+        if report_type == "daily":
+            start = end = date
+        elif report_type == "weekly":
+            start, end = _week_range(date)
+        elif report_type == "monthly":
+            start, end = _month_range(date)
+        else:
+            return None
+
+        try:
+            items = self._db.query_category_stats(start_date=start, end_date=end)
+        except Exception:
+            logger.exception("DB 分类统计查询失败")
+            return None
+
+        return category_stats_to_timedist(items) or None
 
     def get_period_report(self, report_type: str, date: str | None = None):
         """查询已有的周报/月报"""
