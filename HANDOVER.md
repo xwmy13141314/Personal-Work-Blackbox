@@ -6,7 +6,7 @@
 职迹 WorkTrace：纯本地、隐私优先的个人 AI 工作日志工具。三层采集（键盘含中文 IME + 窗口切换 + 剪贴板）→ 隐私过滤 → LLM 日报/周报/月报 + 待办闭环 + 报告可视化 + 导出。工作目录（唯一主线，v4.2.0，git main）：`E:\工作\AI CLOUDE\职迹\轻量化键盘记录工具\`。
 
 ## 2. 当前任务
-v4.2.0（报告可视化 + 导出）+ 待办闭环（v4.1.x）均已完成。本会话：①「- 副本」改名路径同步；②根治前端 build 产物堆积（node `fs.rmSync` 中文路径失效 → `build:desktop` 改 PowerShell 清空）；③验证周报时间分布可用；④打包 windowed exe——修 toast 弹终端元凶（`notification.py` 调 PowerShell 无 `CREATE_NO_WINDOW`），`dist/WorkTrace.exe`（31.5MB onefile，`console=False`）已生成；⑤关于页邮箱修正（`xwmy134`→`xwmy1314`）+ 全项目版本号同步 4.2.0（前端 `APP_VERSION` 4.0.0→4.2.0、后端 `_APP_VERSION` 4.1.0→4.2.0），exe 已重打包，commit `886716d`。下一步：用户验证 exe 后定。
+v4.2.0（报告可视化 + 导出）+ 待办闭环（v4.1.x）+ windowed exe + 关于页修正均已交付（见 §3）。**本会话（2026-08-08）**：更新公开 GitHub README 的「界面预览」——审查用户提供的 7 张新截图（`data/最新界面截图/`，已 gitignore 未进仓库），上线 4 张：活动明细 / 待办跟进 / 关于（实拍）+ 时间分布环形图（`render_donut_svg` 生成的 demo 数据 SVG）；五视图→六视图（补待办）；删除泄露 `sk-` 的旧 `docs/screenshots/settings.jpg` 与过时 `overview.jpg`；已推送 **main**（commit `0b99918`，公开生效，已线上验证）。**安全遗留**：旧 settings.jpg 的 `sk-` 片段仍残留在 git 历史（`c3690f3` 及之前），建议轮换该 API key。下一步：用户验证 exe + 决定是否轮换 key。
 
 ## 3. 已完成进展
 
@@ -43,7 +43,14 @@ v4.2.0（报告可视化 + 导出）+ 待办闭环（v4.1.x）均已完成。本
 - [x] 全项目版本号同步 4.2.0：前端 `APP_VERSION`（`AboutView.tsx`）4.0.0→4.2.0、后端 `_APP_VERSION`（`web_api.py` /ping 返回）4.1.0→4.2.0；已排查 `src/` + 前端 `src/` + `config/` + `blackbox.spec` 确认无其他过时版本号
 - [x] exe 已重打包（31.5MB）— commit `886716d`
 
+**GitHub README 截图更新（本会话）：**
+- [x] README「界面预览」换 v4.2.0 实拍图廊：活动明细 / 待办跟进 / 关于（用户确认真实工作数据可公开）+ 时间分布环形图（`render_donut_svg` demo 数据 SVG，零敏感）
+- [x] 五视图→六视图（补待办视图）；左栏导航列表与特性描述同步修正
+- [x] 删除旧 `docs/screenshots/settings.jpg`（泄露 `sk-` 前缀）与过时 `overview.jpg`
+- [x] 推送 main（commit `0b99918`，公开生效，已线上验证）；`data/` 全程 gitignore，7 张源截图未进仓库
+
 ## 4. 下一步计划
+0. ⚠️ **安全遗留**：旧 `settings.jpg` 的 `sk-` 片段仍残留在 git 历史（`c3690f3` 及之前）。最有效修复 = 去智谱控制台轮换该 API key（让历史泄露的 key 失效）；清理 git 历史（BFG / filter-repo）会重写提交 + 影响 v4.2.0 release tag，须用户确认才动
 1. ~~文件夹改名~~ **已完成（2026-08-08）**：目录已从「轻量化键盘记录工具 - 副本」改名为「轻量化键盘记录工具」；残留路径引用（项目 CLAUDE.md / 本文件 §1§5 / 全局记忆 worktrace / 全局 CLAUDE.md 项目索引）已同步。
 2. 数据备份 `职迹\轻量化键盘记录工具_v3.1旧版_数据备份_20260808.zip`（7.6 MB）：确认 v4.2.0 运行正常后可删
 3. 第三期规划项（见 `docs/PRD_WorkTrace_v4.md` §2）：跨平台 macOS / 浏览器扩展 / IDE 插件 / 自动更新 / i18n —— 均未实施
@@ -70,6 +77,7 @@ v4.2.0（报告可视化 + 导出）+ 待办闭环（v4.1.x）均已完成。本
 - **windowed exe 下控制台子进程必须加 `CREATE_NO_WINDOW`**：`console=False` 只压主进程终端；`subprocess` 调 powershell/cmd 等控制台程序若不加 `creationflags=subprocess.CREATE_NO_WINDOW`，每次都闪黑窗（见 `notification.py`）。GUI 程序（notepad/explorer）无需此标志
 - 新 DB 表走 `SCHEMA_SQL`，新字段走 `_migrate_schema`（ADD COLUMN）；长时 LLM 操作用 task_id + 轮询（见 web_api `_tasks`）
 - 项目 CLAUDE.md 曾停 v2.3 严重过时，已重写；以本 HANDOVER + 代码为准
+- **公开仓库（GitHub）勿含真实数据 / API key**：截图含真实工作内容（日报正文 / 真实文件名 / 待办）或 `sk-` key 一律不上传；`data/` 已 gitignore。本次删除了泄露 `sk-` 的旧 `settings.jpg`（当前版本已清，git 历史残留未清，见 §4）
 
 ## 7. 如何续上
 1. 读本文件 + `CLAUDE.md`
