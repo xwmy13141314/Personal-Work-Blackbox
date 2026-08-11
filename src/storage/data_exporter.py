@@ -180,3 +180,145 @@ class DataExporter:
 
         logger.info("待办 CSV 导出完成: %s (%d 条)", output_path, len(todos))
         return output_path
+
+    # ---- JSON 全量备份 / 导入恢复（P4 §4.10）----
+    # 字段全集（与 TodoRecord 对齐），保留原始枚举值（status/priority 不翻译），便于无损导入恢复
+    _TODO_JSON_FIELDS = (
+        "title", "status", "priority", "note", "due_date",
+        "source_type", "source_ref", "is_draft", "sort_order", "progress",
+        "created_at", "updated_at", "completed_at",
+    )
+
+    def export_todos_json(self, todos, output_path: Path | None = None) -> Path:
+        """导出待办列表为 JSON 全量备份（utf-8，保留原始字段值，便于导入恢复）
+
+        含 sort_order / progress / is_draft 等 CSV 不便表达的字段；
+        不导出 todo_advices（AI 建议基于当时活动，过期且需 id 重映射，恢复价值低）。
+
+        Args:
+            todos: TodoRecord 列表
+            output_path: 输出路径，None 则自动生成
+        Returns: 导出文件路径
+        """
+        if output_path is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_path = Path(f"export_todos_{timestamp}.json")
+
+        data = {
+            "export_time": datetime.now().isoformat(),
+            "version": 1,
+            "todo_count": len(todos),
+            "todos": [
+                {
+                    "title": t.title,
+                    "status": t.status,
+                    "priority": t.priority,
+                    "note": t.note,
+                    "due_date": t.due_date,
+                    "source_type": t.source_type,
+                    "source_ref": t.source_ref,
+                    "is_draft": bool(t.is_draft),
+                    "sort_order": float(getattr(t, "sort_order", 0.0) or 0.0),
+                    "progress": int(getattr(t, "progress", 0) or 0),
+                    "created_at": t.created_at,
+                    "updated_at": t.updated_at,
+                    "completed_at": t.completed_at,
+                }
+                for t in todos
+            ],
+        }
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+        logger.info("待办 JSON 导出完成: %s (%d 条)", output_path, len(todos))
+        return output_path
+
+    def import_todos_json(self, data, mode: str = "append") -> dict:
+        """从 JSON 全量备份导入待办（P4 §4.10）
+
+        Args:
+            data: 已解析的 dict / list，或 JSON 文件路径（str/Path，自动读取解析）
+            mode: append=同标题跳过（默认，安全不破坏现有）；
+                  merge=同标题更新内容字段（不动 sort_order，不打乱看板顺序）
+        Returns:
+            {ok, imported, skipped, updated, errors}
+        """
+        # 接受文件路径或已解析对象
+        if isinstance(data, (str, Path)):
+            with open(data, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        if isinstance(data, dict):
+            if "todos" not in data:
+                return {"ok": False, "error": "JSON 格式无效：缺少 todos 数组"}
+            todos_data = data["todos"]
+        else:
+            todos_data = data
+        if not isinstance(todos_data, list):
+            return {"ok": False, "error": "JSON 格式无效：todos 必须为数组"}
+
+        from src.storage.models import TodoRecord
+
+        # 现有标题 → TodoRecord 索引（去重用；含草稿）
+        existing: dict[str, TodoRecord] = {t.title: t for t in self._db.query_todos(include_drafts=True)}
+
+        imported = skipped = updated = 0
+        errors: list[str] = []
+        # merge 模式更新的内容字段（不含 sort_order，避免打乱看板顺序）
+        merge_fields = (
+            "status", "priority", "note", "due_date",
+            "source_type", "source_ref", "is_draft", "progress", "completed_at",
+        )
+
+        for i, item in enumerate(todos_data, 1):
+            try:
+                if not isinstance(item, dict):
+                    errors.append(f"第 {i} 条：非对象，跳过")
+                    continue
+                title = (item.get("title") or "").strip()
+                if not title:
+                    errors.append(f"第 {i} 条：标题为空，跳过")
+                    continue
+
+                if title in existing:
+                    if mode == "merge":
+                        fields = {k: item[k] for k in merge_fields if k in item}
+                        fields["updated_at"] = datetime.now().isoformat()
+                        self._db.update_todo(existing[title].id, fields)
+                        updated += 1
+                    else:
+                        skipped += 1
+                else:
+                    now = datetime.now().isoformat()
+                    rec = TodoRecord(
+                        title=title,
+                        status=item.get("status", "pending"),
+                        priority=item.get("priority", "normal"),
+                        note=item.get("note", ""),
+                        due_date=item.get("due_date", ""),
+                        source_type=item.get("source_type", "manual"),
+                        source_ref=item.get("source_ref", ""),
+                        is_draft=bool(item.get("is_draft", False)),
+                        sort_order=0.0,  # 0 → insert_todo 自动放列尾，避免跨库 order 冲突
+                        progress=int(item.get("progress", 0) or 0),
+                        created_at=item.get("created_at") or now,
+                        updated_at=item.get("updated_at") or now,
+                        completed_at=item.get("completed_at", ""),
+                    )
+                    rec.id = self._db.insert_todo(rec)
+                    existing[title] = rec  # 防止文件内重复标题二次插入
+                    imported += 1
+            except Exception as e:
+                errors.append(f"第 {i} 条：{e}")
+
+        logger.info(
+            "待办 JSON 导入完成（mode=%s）: 导入 %d / 跳过 %d / 更新 %d / 错误 %d",
+            mode, imported, skipped, updated, len(errors),
+        )
+        return {
+            "ok": True,
+            "mode": mode,
+            "imported": imported,
+            "skipped": skipped,
+            "updated": updated,
+            "errors": errors,
+        }

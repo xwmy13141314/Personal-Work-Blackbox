@@ -135,6 +135,30 @@ export interface Todo {
   created_at: string
   updated_at: string
   completed_at: string
+  sort_order: number // 同列内手动排序（REAL，拖拽中间插值）
+  progress: number // 完成进度 0-100（P2）；满 100 联动 status=done，可回退
+}
+
+// 待办统计（看板顶部 4 指标，PRD v4.3 §4.7）
+export interface TodoStats {
+  total: number // 全部已入库待办（is_draft=0）
+  today_pending: number // 未完成且未逾期（无截止或 due_date >= 今天）
+  overdue: number // 未完成且逾期（due_date < 今天）
+  done: number // status=done
+}
+
+// 待办推进建议（AI 结合当日活动，P2 §4.6；只建议，用户采纳/忽略）
+export interface TodoAdvice {
+  id: number
+  todo_id: number
+  todo_title: string // 关联待办标题（待办已删除则显示「（待办已删除）」）
+  suggestion_type: "start" | "progress" | "stall"
+  reason: string
+  suggested_status: string // start 建议的目标状态（in_progress）
+  suggested_progress: number | null // progress 建议的目标进度 0-100
+  status: "pending" | "applied" | "dismissed"
+  source_date: string // 基于哪天的活动生成
+  created_at: string
 }
 
 export interface BlackboxApi {
@@ -160,7 +184,11 @@ export interface BlackboxApi {
   // 报告时间分布分析（task 模式，result 含 time_dist + 环形图 svg）
   analyze_report: (report_type: string, date: string) => Promise<{ task_id: string }>
   // 待办导出 CSV
-  export_todos: (status?: string | null, include_drafts?: boolean) => Promise<{ ok: boolean; path?: string; filename?: string; count?: number; error?: string }>
+  export_todos: (status?: string | null, include_drafts?: boolean) => Promise<{ ok: boolean; path?: string; filename?: string; count?: number; cancelled?: boolean; error?: string }>
+  // 待办导出 JSON 全量备份（P4 §4.10，含 status/priority/sort_order/progress 全字段）
+  export_todos_json: (status?: string | null, include_drafts?: boolean) => Promise<{ ok: boolean; path?: string; filename?: string; count?: number; cancelled?: boolean; error?: string }>
+  // 待办导入 JSON 全量备份（P4 §4.10）；mode=append(同标题跳过) / merge(同标题更新)
+  import_todos_json: (mode?: string) => Promise<{ ok: boolean; mode?: string; imported?: number; skipped?: number; updated?: number; errors?: string[]; cancelled?: boolean; error?: string }>
   save_api_config(provider: string, base_url: string, model: string, api_key: string): Promise<{ ok: boolean; restart_needed?: boolean; backup?: string; error?: string }>
   test_api_config(provider: string, base_url: string, model: string, api_key: string): Promise<{ ok: boolean; detail?: string; error?: string }>
   // 数据浏览
@@ -206,6 +234,19 @@ export interface BlackboxApi {
   update_todo: (todo_id: number, fields: Partial<Todo>) => Promise<{ ok: boolean; error?: string }>
   adopt_todos: (todo_ids: number[]) => Promise<{ ok: boolean; adopted?: number; error?: string }>
   delete_todo: (todo_id: number) => Promise<{ ok: boolean; error?: string }>
+  // 看板拖拽：批量改 sort_order（前端算好新序后传入）
+  reorder_todos: (items: { id: number; sort_order: number }[]) => Promise<{ ok: boolean; updated?: number; error?: string }>
+  // 看板顶部统计（4 指标）
+  get_todo_stats: () => Promise<TodoStats>
+  // 待办推进建议（P2 §4.6）
+  generate_todo_advices: (date?: string) => Promise<{ task_id: string }>
+  get_todo_advices: () => Promise<TodoAdvice[]>
+  apply_todo_advice: (advice_id: number) => Promise<{ ok: boolean; applied_type?: string; error?: string }>
+  dismiss_todo_advice: (advice_id: number) => Promise<{ ok: boolean; error?: string }>
+  // 待办提醒检查（手动触发，后端每小时自动；P3 §4.9）
+  check_todo_notifications: () => Promise<{ ok: boolean; notified?: number; error?: string }>
+  // 在资源管理器中定位导出的文件
+  reveal_path: (path: string) => Promise<{ ok: boolean; error?: string }>
 }
 
 declare global {
@@ -243,16 +284,18 @@ export function waitForApi(): Promise<BlackboxApi> {
 // 待办 mock 数据（浏览器 dev 预览用）
 let mockTodoSeq = 100
 const mockToday = new Date().toISOString().slice(0, 10)
+let mockAdviceSeq = 50
+let mockAdvices: TodoAdvice[] = []
 let mockTodos: Todo[] = [
-  { id: 1, title: "完成 GR1003 BOM 成本核算并提交采购评审", status: "in_progress", priority: "high", note: "", due_date: mockToday, source_type: "daily_report", source_ref: "2026-08-06", is_draft: false, created_at: "2026-08-06T18:00:00", updated_at: "2026-08-06T18:00:00", completed_at: "" },
-  { id: 2, title: "跟进骨传导耳机样品交付期", status: "pending", priority: "normal", note: "", due_date: "", source_type: "daily_report", source_ref: "2026-08-06", is_draft: false, created_at: "2026-08-06T18:00:00", updated_at: "2026-08-06T18:00:00", completed_at: "" },
-  { id: 3, title: "补充 MatePad 11.5 竞品对标表的续航数据", status: "pending", priority: "high", note: "", due_date: "2026-08-09", source_type: "daily_report", source_ref: "2026-08-05", is_draft: false, created_at: "2026-08-05T18:00:00", updated_at: "2026-08-05T18:00:00", completed_at: "" },
-  { id: 4, title: "整理本周供应商邮件归档", status: "pending", priority: "low", note: "", due_date: "", source_type: "manual", source_ref: "", is_draft: false, created_at: "2026-08-05T10:00:00", updated_at: "2026-08-05T10:00:00", completed_at: "" },
-  { id: 5, title: "对讲机 GH650 LTE 专网参数确认", status: "done", priority: "normal", note: "", due_date: "", source_type: "daily_report", source_ref: "2026-08-04", is_draft: false, created_at: "2026-08-04T18:00:00", updated_at: "2026-08-04T18:00:00", completed_at: "2026-08-04T17:30:00" },
+  { id: 1, title: "完成 GR1003 BOM 成本核算并提交采购评审", status: "in_progress", priority: "high", note: "", due_date: mockToday, source_type: "daily_report", source_ref: "2026-08-06", is_draft: false, created_at: "2026-08-06T18:00:00", updated_at: "2026-08-06T18:00:00", completed_at: "", sort_order: 1, progress: 60 },
+  { id: 2, title: "跟进骨传导耳机样品交付期", status: "pending", priority: "normal", note: "", due_date: "", source_type: "daily_report", source_ref: "2026-08-06", is_draft: false, created_at: "2026-08-06T18:00:00", updated_at: "2026-08-06T18:00:00", completed_at: "", sort_order: 2, progress: 0 },
+  { id: 3, title: "补充 MatePad 11.5 竞品对标表的续航数据", status: "pending", priority: "high", note: "", due_date: "2026-08-09", source_type: "daily_report", source_ref: "2026-08-05", is_draft: false, created_at: "2026-08-05T18:00:00", updated_at: "2026-08-05T18:00:00", completed_at: "", sort_order: 3, progress: 20 },
+  { id: 4, title: "整理本周供应商邮件归档", status: "pending", priority: "low", note: "", due_date: "", source_type: "manual", source_ref: "", is_draft: false, created_at: "2026-08-05T10:00:00", updated_at: "2026-08-05T10:00:00", completed_at: "", sort_order: 4, progress: 0 },
+  { id: 5, title: "对讲机 GH650 LTE 专网参数确认", status: "done", priority: "normal", note: "", due_date: "", source_type: "daily_report", source_ref: "2026-08-04", is_draft: false, created_at: "2026-08-04T18:00:00", updated_at: "2026-08-04T18:00:00", completed_at: "2026-08-04T17:30:00", sort_order: 5, progress: 100 },
   // 草稿区
-  { id: 11, title: "整理 RugOne GR2002 PTT 骑行模式测试用例", status: "pending", priority: "normal", note: "", due_date: "", source_type: "daily_report", source_ref: mockToday, is_draft: true, created_at: "2026-08-07T09:00:00", updated_at: "2026-08-07T09:00:00", completed_at: "" },
-  { id: 12, title: "本周五前回复客户报价单", status: "pending", priority: "high", note: "", due_date: "", source_type: "daily_report", source_ref: mockToday, is_draft: true, created_at: "2026-08-07T09:00:00", updated_at: "2026-08-07T09:00:00", completed_at: "" },
-  { id: 13, title: "安排虚拟试衣 MVP 下周联调", status: "pending", priority: "low", note: "副业·可丢弃", due_date: "", source_type: "daily_report", source_ref: mockToday, is_draft: true, created_at: "2026-08-07T09:00:00", updated_at: "2026-08-07T09:00:00", completed_at: "" },
+  { id: 11, title: "整理 RugOne GR2002 PTT 骑行模式测试用例", status: "pending", priority: "normal", note: "", due_date: "", source_type: "daily_report", source_ref: mockToday, is_draft: true, created_at: "2026-08-07T09:00:00", updated_at: "2026-08-07T09:00:00", completed_at: "", sort_order: 11, progress: 0 },
+  { id: 12, title: "本周五前回复客户报价单", status: "pending", priority: "high", note: "", due_date: "", source_type: "daily_report", source_ref: mockToday, is_draft: true, created_at: "2026-08-07T09:00:00", updated_at: "2026-08-07T09:00:00", completed_at: "", sort_order: 12, progress: 0 },
+  { id: 13, title: "安排虚拟试衣 MVP 下周联调", status: "pending", priority: "low", note: "副业·可丢弃", due_date: "", source_type: "daily_report", source_ref: mockToday, is_draft: true, created_at: "2026-08-07T09:00:00", updated_at: "2026-08-07T09:00:00", completed_at: "", sort_order: 13, progress: 0 },
 ]
 
 // 报告时间分布 mock（浏览器 dev 预览用）
@@ -328,6 +371,8 @@ const mockApi: BlackboxApi = {
       : { ok: false, error: "PDF 请点「导出 PDF」用打印另存" },
   analyze_report: async () => ({ task_id: "analyze-mock" }),
   export_todos: async () => ({ ok: true, path: "mock/todos.csv", filename: "todos.csv", count: 8 }),
+  export_todos_json: async () => ({ ok: true, path: "mock/todos.json", filename: "todos.json", count: 8 }),
+  import_todos_json: async () => ({ ok: true, mode: "append", imported: 3, skipped: 5, updated: 0, errors: [] }),
   save_api_config: async () => ({ ok: true, restart_needed: true }),
   test_api_config: async () => ({ ok: true, detail: "mock 连接成功" }),
   get_app_stats: async () => ({
@@ -407,7 +452,7 @@ const mockApi: BlackboxApi = {
     const seeds = ["整理 RugOne GR2002 测试用例", "回复客户报价单", "安排下周联调"]
     seeds.forEach((title) => {
       mockTodoSeq++
-      mockTodos.push({ id: mockTodoSeq, title, status: "pending", priority: "normal", note: "", due_date: "", source_type: "daily_report", source_ref: mockToday, is_draft: true, created_at: now, updated_at: now, completed_at: "" })
+      mockTodos.push({ id: mockTodoSeq, title, status: "pending", priority: "normal", note: "", due_date: "", source_type: "daily_report", source_ref: mockToday, is_draft: true, created_at: now, updated_at: now, completed_at: "", sort_order: mockTodoSeq, progress: 0 })
     })
     return { task_id: "extract-mock" }
   },
@@ -417,12 +462,24 @@ const mockApi: BlackboxApi = {
   add_todo: async (title: string, priority = "normal", due_date = "", note = "") => {
     mockTodoSeq++
     const now = new Date().toISOString()
-    mockTodos.push({ id: mockTodoSeq, title, status: "pending", priority: priority as TodoPriority, note, due_date, source_type: "manual", source_ref: "", is_draft: false, created_at: now, updated_at: now, completed_at: "" })
+    mockTodos.push({ id: mockTodoSeq, title, status: "pending", priority: priority as TodoPriority, note, due_date, source_type: "manual", source_ref: "", is_draft: false, created_at: now, updated_at: now, completed_at: "", sort_order: mockTodoSeq, progress: 0 })
     return { ok: true, id: mockTodoSeq }
   },
   update_todo: async (id: number, fields: Partial<Todo>) => {
     const t = mockTodos.find((x) => x.id === id)
-    if (t) Object.assign(t, fields, { updated_at: new Date().toISOString() })
+    if (t) {
+      const next = { ...fields } as Partial<Todo>
+      // progress ↔ done 联动（模拟后端语义，dev 预览可见）
+      if (next.progress !== undefined) {
+        const p = Math.max(0, Math.min(100, Math.round(Number(next.progress) || 0)))
+        next.progress = p
+        if (p >= 100) next.status = "done"
+        else if (t.status === "done") next.status = "in_progress"
+      }
+      Object.assign(t, next, { updated_at: new Date().toISOString() })
+      if (next.status === "done") t.completed_at = new Date().toISOString()
+      else if (next.status && next.status !== "done") t.completed_at = ""
+    }
     return { ok: !!t }
   },
   adopt_todos: async (ids: number[]) => {
@@ -441,4 +498,75 @@ const mockApi: BlackboxApi = {
     mockTodos = mockTodos.filter((t) => t.id !== id)
     return { ok: mockTodos.length < before }
   },
+  reorder_todos: async (items: { id: number; sort_order: number }[]) => {
+    let n = 0
+    items.forEach((it) => {
+      const t = mockTodos.find((x) => x.id === it.id)
+      if (t) {
+        t.sort_order = it.sort_order
+        n++
+      }
+    })
+    return { ok: true, updated: n }
+  },
+  get_todo_stats: async () => {
+    const today = new Date().toISOString().slice(0, 10)
+    const real = mockTodos.filter((t) => !t.is_draft)
+    let today_pending = 0
+    let overdue = 0
+    let done = 0
+    real.forEach((t) => {
+      if (t.status === "done") done++
+      else if (t.status === "pending" || t.status === "in_progress") {
+        if (t.due_date && t.due_date < today) overdue++
+        else today_pending++
+      }
+    })
+    return { total: real.length, today_pending, overdue, done }
+  },
+  generate_todo_advices: async (_date?: string) => {
+    // dev 预览：为未完成正式待办造 1-2 条示例建议（去重：同 todo 已有 pending 跳过）
+    const now = new Date().toISOString()
+    const active = mockTodos.filter((t) => !t.is_draft && (t.status === "pending" || t.status === "in_progress"))
+    active.slice(0, 2).forEach((t) => {
+      if (mockAdvices.some((a) => a.todo_id === t.id && a.status === "pending")) return
+      mockAdviceSeq++
+      mockAdvices.push({
+        id: mockAdviceSeq, todo_id: t.id, todo_title: t.title,
+        suggestion_type: t.progress > 0 ? "progress" : "start",
+        reason: "今日检测到相关应用活动，建议推进",
+        suggested_status: t.progress > 0 ? "" : "in_progress",
+        suggested_progress: t.progress > 0 ? Math.min(100, t.progress + 30) : null,
+        status: "pending", source_date: mockToday, created_at: now,
+      })
+    })
+    return { task_id: "advice-mock" }
+  },
+  get_todo_advices: async () => mockAdvices.filter((a) => a.status === "pending"),
+  apply_todo_advice: async (advice_id: number) => {
+    const a = mockAdvices.find((x) => x.id === advice_id)
+    if (!a || a.status !== "pending") return { ok: false }
+    const now = new Date().toISOString()
+    if (a.suggestion_type === "start") {
+      const t = mockTodos.find((x) => x.id === a.todo_id)
+      if (t) { t.status = (a.suggested_status as TodoStatus) || "in_progress"; t.updated_at = now }
+    } else if (a.suggestion_type === "progress") {
+      const t = mockTodos.find((x) => x.id === a.todo_id)
+      if (t && a.suggested_progress !== null) {
+        const p = Math.min(100, a.suggested_progress)
+        t.progress = p; t.updated_at = now
+        if (p >= 100) { t.status = "done"; t.completed_at = now }
+      }
+    }
+    // stall：不动待办
+    a.status = "applied"
+    return { ok: true, applied_type: a.suggestion_type }
+  },
+  dismiss_todo_advice: async (advice_id: number) => {
+    const a = mockAdvices.find((x) => x.id === advice_id)
+    if (a) a.status = "dismissed"
+    return { ok: !!a }
+  },
+  check_todo_notifications: async () => ({ ok: true, notified: 0 }),
+  reveal_path: async (_path: string) => ({ ok: true }),
 }

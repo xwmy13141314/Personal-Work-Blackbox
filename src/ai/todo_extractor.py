@@ -27,6 +27,10 @@ _MAX_TODOS = 50
 # 单个 title 最大长度
 _MAX_TITLE_LEN = 200
 
+# 推进建议（P2 §4.6）
+_VALID_ADVICE_TYPES = {"start", "progress", "stall"}
+_MAX_ADVICES = 30
+
 
 class TodoExtractor:
     """待办提取器
@@ -69,6 +73,36 @@ class TodoExtractor:
         """同步包装（便于在非异步上下文中调用）"""
         return asyncio.run(self.extract(report_text))
 
+    async def advise(self, active_todos: list, app_stats: list[dict]) -> list[dict]:
+        """结合当日活动对未完成待办给推进建议（异步，P2 §4.6）
+
+        Args:
+            active_todos: 未完成待办（TodoRecord 列表，pending/in_progress）
+            app_stats: 当日应用使用统计（query_app_usage_stats 结果）
+
+        Returns:
+            建议字典列表 [{"todo_id","type","reason","suggested_progress"?}, ...]，
+            LLM 失败返回空列表
+        """
+        if not active_todos:
+            logger.info("无未完成待办，跳过推进建议")
+            return []
+        messages = self._prompt.build_todo_progress_prompt(active_todos, app_stats)
+        try:
+            content, model_used = await self._llm.complete(messages)
+            logger.info("待办推进建议完成，使用模型: %s", model_used)
+        except Exception as exc:
+            logger.exception("待办推进建议 LLM 调用失败: %s", exc)
+            return []
+        valid_ids = {t.id for t in active_todos}
+        advices = self.parse_advices_json(content, valid_ids)
+        logger.info("生成 %d 条待办推进建议", len(advices))
+        return advices
+
+    def advise_sync(self, active_todos: list, app_stats: list[dict]) -> list[dict]:
+        """同步包装（便于在非异步上下文中调用）"""
+        return asyncio.run(self.advise(active_todos, app_stats))
+
     @staticmethod
     def parse_todos_json(content: str) -> list[dict]:
         """容错解析 LLM 输出的待办 JSON 数组
@@ -102,6 +136,37 @@ class TodoExtractor:
             if todo:
                 cleaned.append(todo)
             if len(cleaned) >= _MAX_TODOS:
+                break
+        return cleaned
+
+    @staticmethod
+    def parse_advices_json(content: str, valid_ids: set | None = None) -> list[dict]:
+        """容错解析推进建议 JSON 数组（复用提取器的 fence/array 解析，P2 §4.6）
+
+        Args:
+            valid_ids: 合法的 todo_id 集合；LLM 编造的 id 被过滤（None 则不过滤）
+        """
+        if not content or not content.strip():
+            return []
+        text = _strip_code_fence(content.strip())
+        array_text = _extract_json_array(text)
+        if array_text is None:
+            logger.warning("未能从 LLM 输出解析出建议 JSON 数组: %s", content[:200])
+            return []
+        try:
+            data = json.loads(array_text)
+        except json.JSONDecodeError as exc:
+            logger.warning("建议 JSON 解析失败: %s", exc)
+            return []
+        if not isinstance(data, list):
+            return []
+        cleaned = []
+        valid = set(valid_ids or [])
+        for item in data:
+            a = _clean_advice_item(item, valid)
+            if a:
+                cleaned.append(a)
+            if len(cleaned) >= _MAX_ADVICES:
                 break
         return cleaned
 
@@ -166,3 +231,29 @@ def _clean_todo_item(item) -> dict | None:
         "due_date": due_date,
         "note": note,
     }
+
+
+def _clean_advice_item(item, valid_ids: set) -> dict | None:
+    """清洗单条推进建议：校验 + 归一化，不合法返回 None（P2 §4.6）"""
+    if not isinstance(item, dict):
+        return None
+    try:
+        todo_id = int(item.get("todo_id"))
+    except (TypeError, ValueError):
+        return None
+    if valid_ids and todo_id not in valid_ids:
+        return None  # LLM 编造的 todo_id
+    atype = str(item.get("type", "")).strip().lower()
+    if atype not in _VALID_ADVICE_TYPES:
+        return None
+    reason = str(item.get("reason", "") or "").strip()
+    if not reason:
+        return None
+    result = {"todo_id": todo_id, "type": atype, "reason": reason[:300]}
+    if atype == "progress":
+        try:
+            p = int(item.get("suggested_progress"))
+        except (TypeError, ValueError):
+            return None  # progress 必须有合法 suggested_progress
+        result["suggested_progress"] = max(0, min(100, p))
+    return result

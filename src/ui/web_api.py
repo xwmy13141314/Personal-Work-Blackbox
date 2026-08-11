@@ -31,6 +31,12 @@ class BlackboxAPI:
         # engine.pause/resume 无状态查询，API 层自行维护
         self._is_paused = False
         self._recording_started_at: str | None = None
+        # pywebview 窗口引用（由 web_ui 在创建窗口后注入，用于文件保存对话框等）
+        self._window = None
+
+    def bind_window(self, window) -> None:
+        """注入 pywebview 窗口引用（create_file_dialog 等需要）"""
+        self._window = window
 
     # ==================== 生命周期 ====================
 
@@ -243,6 +249,12 @@ class BlackboxAPI:
                 task_id, status="done",
                 result={"markdown": report, "saved_path": str(saved_path) if saved_path else ""},
             )
+            # 日报生成成功后，后台静默生成待办推进建议（不阻断报告返回；仅日报，P2 §4.6）
+            if report_type == "daily" and self._engine._todo_extractor:
+                threading.Thread(
+                    target=self._gen_advices_silent, args=(date,),
+                    daemon=True, name="AutoAdvice",
+                ).start()
         except Exception as e:
             logger.exception("报告生成工作线程异常")
             self._set_task(task_id, status="failed", error=str(e))
@@ -539,6 +551,22 @@ class BlackboxAPI:
         try:
             todo_id = int(todo_id)
             fields = dict(fields or {})
+            # progress ↔ status 联动（PRD v4.3 §4.5 / §8 决策3）：
+            # 进度调到 100 自动转 done；从 100 降下来且当前是 done 则回退 in_progress。
+            # 仅在显式传 progress 时触发；纯拖拽改 status 不动 progress。
+            if "progress" in fields:
+                try:
+                    p = max(0, min(100, int(fields["progress"])))
+                except (TypeError, ValueError):
+                    p = None
+                if p is not None:
+                    fields["progress"] = p
+                    if p >= 100:
+                        fields["status"] = "done"
+                    else:
+                        cur = engine._db.query_todo(todo_id)
+                        if cur and cur.status == "done":
+                            fields["status"] = "in_progress"
             status = fields.get("status")
             if status == "done":
                 fields.setdefault("completed_at", datetime.now().isoformat())
@@ -579,6 +607,140 @@ class BlackboxAPI:
             logger.exception("删除待办失败")
             return {"ok": False, "error": str(e)}
 
+    def reorder_todos(self, items) -> dict:
+        """批量更新待办排序（拖拽改序，前端算好新 sort_order 后传入）
+
+        Args:
+            items: [{"id": int, "sort_order": float}, ...]
+        """
+        engine = self._engine
+        if not engine._db.is_connected:
+            return {"ok": False, "error": "数据库未连接"}
+        try:
+            items = list(items or [])
+            if not items:
+                return {"ok": True, "updated": 0}
+            updated = engine._db.reorder_todos(items)
+            return {"ok": True, "updated": updated}
+        except Exception as e:
+            logger.exception("批量排序失败")
+            return {"ok": False, "error": str(e)}
+
+    def get_todo_stats(self) -> dict:
+        """待办统计（4 指标：总任务 / 今日待办 / 已延期 / 已完成）
+
+        today 取本机当前日期（口径见 PRD v4.3 §4.7）。数据库未连接时返回零值。
+        """
+        engine = self._engine
+        if not engine._db.is_connected:
+            return {"total": 0, "today_pending": 0, "overdue": 0, "done": 0}
+        try:
+            today = datetime.now().strftime("%Y-%m-%d")
+            return engine._db.get_todo_stats(today)
+        except Exception:
+            logger.exception("待办统计失败")
+            return {"total": 0, "today_pending": 0, "overdue": 0, "done": 0}
+
+    # ==================== 待办推进建议（P2 §4.6） ====================
+
+    def get_todo_advices(self) -> list:
+        """查询未处理的推进建议（关联 todo 标题，前端展示用）"""
+        engine = self._engine
+        if not engine._db.is_connected:
+            return []
+        try:
+            return engine._db.query_todo_advices(status="pending")
+        except Exception:
+            logger.exception("查询推进建议失败")
+            return []
+
+    def apply_todo_advice(self, advice_id: int) -> dict:
+        """采纳推进建议：按建议类型改待办（start→状态 / progress→进度，触发联动），再标记 applied
+
+        stall 类型采纳=知晓，不改待办。
+        """
+        engine = self._engine
+        if not engine._db.is_connected:
+            return {"ok": False, "error": "数据库未连接"}
+        try:
+            advice = engine._db.query_advice(int(advice_id))
+            if not advice:
+                return {"ok": False, "error": "建议不存在"}
+            if advice["status"] != "pending":
+                return {"ok": False, "error": "建议已处理"}
+            atype = advice["suggestion_type"]
+            tid = advice["todo_id"]
+            if atype == "start":
+                # 标记进行中（复用 update_todo 的 status 联动：清/记 completed_at）
+                self.update_todo(tid, {"status": advice["suggested_status"] or "in_progress"})
+            elif atype == "progress":
+                # 推进进度（复用 update_todo 的 progress↔done 联动）
+                self.update_todo(tid, {"progress": advice["suggested_progress"] or 0})
+            # stall：仅标记建议已处理，不动待办
+            engine._db.update_advice_status(int(advice_id), "applied")
+            return {"ok": True, "applied_type": atype}
+        except Exception as e:
+            logger.exception("采纳推进建议失败")
+            return {"ok": False, "error": str(e)}
+
+    def dismiss_todo_advice(self, advice_id: int) -> dict:
+        """忽略推进建议"""
+        engine = self._engine
+        if not engine._db.is_connected:
+            return {"ok": False, "error": "数据库未连接"}
+        try:
+            ok = engine._db.update_advice_status(int(advice_id), "dismissed")
+            return {"ok": ok}
+        except Exception as e:
+            logger.exception("忽略推进建议失败")
+            return {"ok": False, "error": str(e)}
+
+    def generate_todo_advices(self, date: str | None = None) -> dict:
+        """异步生成推进建议（手动触发）：立即返回 task_id，前端轮询 get_task_status
+
+        结果 result: {"generated": int}
+        """
+        with self._lock:
+            self._task_seq += 1
+            task_id = f"task-{self._task_seq}"
+            self._tasks[task_id] = {"status": "pending", "result": None, "error": None}
+        target = date or datetime.now().strftime("%Y-%m-%d")
+        threading.Thread(
+            target=self._gen_advices_worker,
+            args=(task_id, target),
+            daemon=True,
+            name=f"GenAdvice-{task_id}",
+        ).start()
+        return {"task_id": task_id}
+
+    def _gen_advices_worker(self, task_id: str, date: str):
+        """推进建议生成工作线程"""
+        try:
+            self._set_task(task_id, status="running")
+            result = self._engine.generate_todo_advices(date)
+            if not result.get("ok"):
+                self._set_task(task_id, status="failed", error=result.get("error", "生成失败"))
+                return
+            self._set_task(task_id, status="done", result={"generated": result.get("generated", 0)})
+        except Exception as e:
+            logger.exception("推进建议工作线程异常")
+            self._set_task(task_id, status="failed", error=str(e))
+
+    def _gen_advices_silent(self, date: str):
+        """日报生成成功后静默生成推进建议（失败仅记日志，不打扰用户）"""
+        try:
+            self._engine.generate_todo_advices(date)
+        except Exception:
+            logger.exception("日报后自动生成推进建议失败")
+
+    def check_todo_notifications(self) -> dict:
+        """手动触发待办提醒检查（逾期/即将到期 toast），返回本次发送数（P3 §4.9）"""
+        try:
+            return self._engine.check_and_notify_todos()
+        except Exception as e:
+            logger.exception("待办提醒检查失败")
+            return {"ok": False, "error": str(e)}
+
     @staticmethod
     def _todo_to_dict(t) -> dict:
         """TodoRecord → JSON-able dict（pywebview 不能返回 dataclass）"""
@@ -595,6 +757,8 @@ class BlackboxAPI:
             "created_at": t.created_at,
             "updated_at": t.updated_at,
             "completed_at": t.completed_at,
+            "sort_order": t.sort_order,
+            "progress": t.progress,
         }
 
     # ==================== API 配置（脱敏） ====================
@@ -849,25 +1013,128 @@ class BlackboxAPI:
     def export_todos(self, status: str | None = None, include_drafts: bool = True) -> dict:
         """导出待办列表为 CSV（utf-8-sig，Excel/飞书多维表格直接打开）
 
+        弹原生保存对话框让用户选保存位置；取消则不导出。
+
         Args:
             status: 按状态过滤（None = 全部），与待办视图当前筛选一致
             include_drafts: 是否包含草稿区
         """
         try:
             from src.storage.data_exporter import DataExporter
-            from src.main import get_app_root
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            default_name = f"export_todos_{timestamp}.csv"
+            save_path = self._pick_save_path(default_name, ("CSV Files (*.csv)",))
+            if save_path is None:
+                return {"ok": False, "cancelled": True}
+            # 对话框可能不带扩展名，补 .csv
+            if not save_path.lower().endswith(".csv"):
+                save_path += ".csv"
 
             rows = self._engine._db.query_todos(status=status, include_drafts=include_drafts)
             exporter = DataExporter(self._engine._db)
-
-            export_dir = get_app_root() / "data" / "exports"
-            export_dir.mkdir(parents=True, exist_ok=True)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"export_todos_{timestamp}.csv"
-            path = exporter.export_todos_csv(rows, output_path=export_dir / filename)
-            return {"ok": True, "path": str(path), "filename": filename, "count": len(rows)}
+            path = exporter.export_todos_csv(rows, output_path=Path(save_path))
+            return {"ok": True, "path": str(path), "filename": Path(path).name, "count": len(rows)}
         except Exception as e:
             logger.exception("导出待办失败")
+            return {"ok": False, "error": str(e)}
+
+    def export_todos_json(self, status: str | None = None, include_drafts: bool = True) -> dict:
+        """导出待办列表为 JSON 全量备份（P4 §4.10，含 status/priority/sort_order/progress 全字段）
+
+        弹原生保存对话框让用户选位置；取消则不导出。便于跨库迁移 / 换机恢复。
+        """
+        try:
+            from src.storage.data_exporter import DataExporter
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            default_name = f"export_todos_{timestamp}.json"
+            save_path = self._pick_save_path(default_name, ("JSON Files (*.json)",))
+            if save_path is None:
+                return {"ok": False, "cancelled": True}
+            if not save_path.lower().endswith(".json"):
+                save_path += ".json"
+
+            rows = self._engine._db.query_todos(status=status, include_drafts=include_drafts)
+            exporter = DataExporter(self._engine._db)
+            path = exporter.export_todos_json(rows, output_path=Path(save_path))
+            return {"ok": True, "path": str(path), "filename": Path(path).name, "count": len(rows)}
+        except Exception as e:
+            logger.exception("导出待办 JSON 失败")
+            return {"ok": False, "error": str(e)}
+
+    def import_todos_json(self, mode: str = "append") -> dict:
+        """从 JSON 全量备份导入待办（P4 §4.10）
+
+        弹原生打开文件对话框选 JSON；mode=append(同标题跳过,默认安全) / merge(同标题更新内容)。
+        """
+        try:
+            from src.storage.data_exporter import DataExporter
+
+            open_path = self._pick_open_path(("JSON Files (*.json)",))
+            if open_path is None:
+                return {"ok": False, "cancelled": True}
+            exporter = DataExporter(self._engine._db)
+            return exporter.import_todos_json(Path(open_path), mode=mode)
+        except Exception as e:
+            logger.exception("导入待办 JSON 失败")
+            return {"ok": False, "error": str(e)}
+
+    def _pick_save_path(self, save_filename: str, file_types: tuple[str, ...]) -> str | None:
+        """弹 pywebview 原生保存对话框，返回用户选定的路径（取消返回 None）
+
+        无窗口引用时回退 None（调用方按取消处理）。
+        """
+        if not self._window:
+            logger.warning("无 pywebview 窗口引用，跳过保存对话框")
+            return None
+        try:
+            import webview
+
+            result = self._window.create_file_dialog(
+                webview.FileDialog.SAVE,
+                save_filename=save_filename,
+                file_types=file_types,
+            )
+            if not result:
+                return None
+            return result[0]
+        except Exception:
+            logger.exception("保存对话框异常")
+            return None
+
+    def _pick_open_path(self, file_types: tuple[str, ...]) -> str | None:
+        """弹 pywebview 原生打开文件对话框，返回用户选定的路径（取消返回 None）
+
+        无窗口引用时回退 None。供 JSON 导入等场景使用。
+        """
+        if not self._window:
+            logger.warning("无 pywebview 窗口引用，跳过打开对话框")
+            return None
+        try:
+            import webview
+
+            result = self._window.create_file_dialog(webview.FileDialog.OPEN, file_types=file_types)
+            if not result:
+                return None
+            return result[0]
+        except Exception:
+            logger.exception("打开文件对话框异常")
+            return None
+
+    def reveal_path(self, path: str) -> dict:
+        """在系统资源管理器中定位到指定文件（Windows: explorer /select）"""
+        import subprocess
+        try:
+            # explorer 是 GUI 程序不闪控制台，CREATE_NO_WINDOW 仅作保险
+            subprocess.run(
+                ["explorer", f"/select,{path}"],
+                check=False,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            return {"ok": True}
+        except Exception as e:
+            logger.exception("定位文件失败")
             return {"ok": False, "error": str(e)}
 
     # ==================== 专注模式 ====================

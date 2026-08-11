@@ -19,6 +19,7 @@
 - **全文搜索**：检索历史输入记录，按日期 / 应用定位
 - **应用分类**：10 类自动分类（开发/浏览器/通讯/办公/设计/娱乐/系统/数据库/AI），含分类统计
 - **专注模式**：娱乐应用检测提醒 + 专注会话 + 每日效率目标
+- **待办看板**：AI 从报告自动提取待办，三列看板（@dnd-kit 拖拽）+ 进度跟踪 + AI 推进建议 + 逾期顺延 + toast 提醒；支持「按状态 / 按来源」多维视图
 - **数据导出**：活动数据 CSV / JSON 导出 + 待办列表 CSV 导出（UTF-8 BOM，Excel 兼容）
 - **报告导出**：日报/周报/月报一键导出为 macOS 风格单文件 HTML（内联 CSS/SVG，可离线、可微信/邮件直发），浏览器 Ctrl+P 直接转 PDF
 - **时间分布可视化**：LLM 从报告提取时间分布，纯 SVG 环形图渲染，导出 HTML 与 app 内统一呈现
@@ -171,9 +172,11 @@ set WORKTRACE_DB_KEY=你的加密密钥
 
 ## 数据
 
-- `data/blackbox.db` — SQLite 主库（sessions / text_segments / clipboard_records / window_events / daily_reports / period_reports）
+- `data/blackbox.db` — SQLite 主库（sessions / text_segments / clipboard_records / window_events / daily_reports / period_reports / todos）
 - `data/logs/` — 每日 Markdown 导出 + AI 报告
 - `data/backup_历史库_*/` — 历史库归档（永不删）
+
+> **打包版与源码版共用同一数据库**：`get_app_root` 智能检测——开发者双击 `dist/WorkTrace.exe`（项目内）与 `python -m src.main` 都读写项目根 `data/blackbox.db`；外部用户下载 exe 到任意目录时数据就近放 exe 同级 `data/`。
 
 ## 打包
 
@@ -239,6 +242,12 @@ PYTHONPATH=src python3 -m personal_recorder build-day --date 2026-07-03
 ## 更新日志
 
 详见 `CHANGELOG.md`。
+
+### v4.3.0 (2026-08-11) — 待办看板增强 + 双库根治
+
+- **双库根治**：`get_app_root` 智能检测——开发者 exe（项目内 `dist/`）与 python 共用项目根唯一库；外部用户 exe 数据就近放 exe 旁。历史双库（`dist/data` vs 项目根 `data/`）已合并
+- **待办看板**（P1-P4）：三列拖拽看板 + 进度跟踪 + AI 推进建议 + 融合工作实况环形图 + 逾期顺延 + toast 提醒 + 多维视图（按状态 / 按来源）
+- 待办 JSON 导入导出（后端保留）；测试基线 353 passed
 
 ### v4.2.0 (2026-08-08) — 报告可视化 + 导出能力
 

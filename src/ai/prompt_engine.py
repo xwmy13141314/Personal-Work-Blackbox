@@ -171,6 +171,44 @@ BUILTIN_TIMEDIST_USER_TEMPLATE = """请从以下工作日报中提取时间分�
 只输出 JSON 数组本身，不要包裹在代码块中，不要有任何解释。"""
 
 
+# ==================== 待办推进建议 Prompt（P2 §4.6） ====================
+
+BUILTIN_TODO_PROGRESS_SYSTEM = """你是一个待办推进顾问。你的任务是审视用户未完成的待办事项，结合当天实际的工作活动，给出推进建议。
+
+规则：
+1. 只针对未完成的待办（pending / in_progress）给建议，已完成/已取消的不建议
+2. 建议必须基于当天活动与待办的真实关联（应用类别、关键词），不要无依据泛泛建议
+3. 每条建议必须关联一个 todo_id（只能是输入列表中真实存在的 id）
+4. 三类建议：
+   - start：当前 pending，但今天有相关活动迹象 → 建议标记进行中
+   - progress：当前进行中，今天有推进迹象 → 建议更新进度（给 suggested_progress 0-100）
+   - stall：连续无明显相关活动 → 提示可能停滞
+5. reason 一句话说明依据（点出关联的应用/活动）
+6. 输出必须是合法 JSON 数组，不要任何其他文字
+7. 若没有值得建议的待办，输出空数组 []"""
+
+BUILTIN_TODO_PROGRESS_USER = """请审视以下未完成待办，结合今天的活动给出推进建议。
+
+## 未完成待办
+{todos_brief}
+（每行：id | 状态 | 当前进度 | 标题）
+
+## 今日活动摘要
+{activity_brief}
+
+## 输出格式
+JSON 数组，每元素：
+- todo_id：整数（必须是上述列表中的 id）
+- type："start" / "progress" / "stall"
+- reason：一句话依据
+- suggested_progress：整数 0-100（仅 type=progress 时必填，其他类型省略）
+
+示例：
+[{{"todo_id": 3, "type": "progress", "reason": "今天有 90 分钟 Excel 操作，可能推进了数据整理", "suggested_progress": 70}}]
+
+只输出 JSON 数组本身，不要包裹代码块，不要解释。"""
+
+
 class PromptEngine:
     """Prompt 模板引擎
 
@@ -191,6 +229,8 @@ class PromptEngine:
         self._todo_extract_user = BUILTIN_TODO_USER_TEMPLATE
         self._timedist_extract_system = BUILTIN_TIMEDIST_EXTRACT_SYSTEM
         self._timedist_extract_user = BUILTIN_TIMEDIST_USER_TEMPLATE
+        self._todo_progress_system = BUILTIN_TODO_PROGRESS_SYSTEM
+        self._todo_progress_user = BUILTIN_TODO_PROGRESS_USER
         self._load_templates()
 
     def _load_templates(self):
@@ -356,6 +396,28 @@ class PromptEngine:
         user_content = self._timedist_extract_user.format(report_text=report_text or "（空报告）")
         return [
             {"role": "system", "content": self._timedist_extract_system},
+            {"role": "user", "content": user_content},
+        ]
+
+    def build_todo_progress_prompt(self, active_todos: list, app_stats: list[dict]) -> list[dict[str, str]]:
+        """构建待办推进建议 Prompt（P2 §4.6）
+
+        Args:
+            active_todos: 未完成待办（TodoRecord 列表，pending/in_progress）
+            app_stats: 当日应用使用统计（query_app_usage_stats 结果）
+
+        Returns:
+            消息列表 [{"role": "system"|"user", "content": "..."}]
+        """
+        todos_brief = "\n".join(
+            f"{t.id} | {t.status} | {t.progress}% | {t.title}" for t in active_todos
+        ) or "（无未完成待办）"
+        activity_brief = self._format_app_stats(app_stats)
+        user_content = self._todo_progress_user.format(
+            todos_brief=todos_brief, activity_brief=activity_brief
+        )
+        return [
+            {"role": "system", "content": self._todo_progress_system},
             {"role": "user", "content": user_content},
         ]
 

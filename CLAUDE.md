@@ -3,7 +3,7 @@
 > 本文件记录**稳定的项目事实与约定**。当前任务进度、近期变更见 `HANDOVER.md`（每次会话先读它）。
 
 ## 项目概述
-职迹 WorkTrace — 隐私优先的个人 AI 工作日志工具。三层采集（输入活动 + 窗口上下文 + 剪贴板）→ 隐私过滤 → LLM 生成日报/周报/月报 + 时间分布可视化 + 报告/待办导出。纯本地运行，数据只存本机。当前版本 v4.2.0。
+职迹 WorkTrace — 隐私优先的个人 AI 工作日志工具。三层采集（输入活动 + 窗口上下文 + 剪贴板）→ 隐私过滤 → LLM 生成日报/周报/月报 + 时间分布可视化 + 报告/待办导出。纯本地运行，数据只存本机。当前版本 v4.3（v4.2.0 已发布 GitHub Release）。
 
 ## 关键技术决策
 - **键盘捕获**：ctypes 直接调用 Windows API（WH_KEYBOARD_LL）+ 专用线程独立消息泵，**不用 pynput**（打包环境静默回退 _dummy 后端）。v4.1 重构
@@ -32,7 +32,7 @@ cd ../.. && pyinstaller --noconfirm blackbox.spec                            # �
 重新打包需先关闭运行中的 WorkTrace.exe（Windows 文件锁）。
 
 ## 测试
-`python -m pytest -q`，292 passed。导出/可视化测试在 `tests/test_export.py`。
+`python -m pytest -q`，353 passed。导出/可视化测试在 `tests/test_export.py`，待办看板测试在 `tests/test_todo.py`。
 
 ## 目录结构（关键）
 ```

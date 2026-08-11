@@ -127,7 +127,31 @@ CREATE TABLE IF NOT EXISTS todos (
     is_draft      INTEGER DEFAULT 1,
     created_at    TEXT NOT NULL,
     updated_at    TEXT NOT NULL,
-    completed_at  TEXT
+    completed_at  TEXT,
+    sort_order    REAL NOT NULL DEFAULT 0,
+    progress      INTEGER NOT NULL DEFAULT 0
+);
+
+-- 待办推进建议（AI 结合当日活动给的建议，P2 §4.6）
+CREATE TABLE IF NOT EXISTS todo_advices (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    todo_id            INTEGER NOT NULL REFERENCES todos(id),
+    suggestion_type    TEXT NOT NULL,
+    reason             TEXT NOT NULL,
+    suggested_status   TEXT,
+    suggested_progress INTEGER,
+    status             TEXT NOT NULL DEFAULT 'pending',
+    source_date        TEXT,
+    created_at         TEXT NOT NULL,
+    updated_at         TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS todo_notify_log (
+    todo_id      INTEGER NOT NULL,
+    notify_date  TEXT NOT NULL,
+    notify_type  TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    PRIMARY KEY (todo_id, notify_date, notify_type)
 );
 
 -- 索引
@@ -197,6 +221,8 @@ class Database:
         migrations = [
             ("sessions", "category", "TEXT DEFAULT '其他'"),
             ("sessions", "icon", "TEXT DEFAULT '📦'"),
+            ("todos", "sort_order", "REAL NOT NULL DEFAULT 0"),
+            ("todos", "progress", "INTEGER NOT NULL DEFAULT 0"),
         ]
         for table, column, col_type in migrations:
             try:
@@ -207,6 +233,20 @@ class Database:
                     logger.info("数据库迁移: %s.%s 已添加", table, column)
             except Exception as e:
                 logger.debug("迁移检查跳过 %s.%s: %s", table, column, e)
+        # 回填旧 todos 的 sort_order（按 id 升序赋 1..N；仅处理 sort_order=0 的旧行，幂等）
+        try:
+            rows = self._conn.execute(
+                "SELECT id FROM todos WHERE sort_order = 0 ORDER BY id ASC"
+            ).fetchall()
+            if rows:
+                for idx, (tid,) in enumerate(rows, start=1):
+                    self._conn.execute(
+                        "UPDATE todos SET sort_order = ? WHERE id = ?",
+                        (float(idx), tid),
+                    )
+                logger.info("数据库迁移: 回填 %d 条 todos 的 sort_order", len(rows))
+        except Exception as e:
+            logger.debug("todos sort_order 回填跳过: %s", e)
         self._conn.commit()
 
     def migrate_to_encrypted(self, encryption_key: str) -> bool:
@@ -789,16 +829,26 @@ class Database:
     # ==================== 待办事项 CRUD ====================
 
     def insert_todo(self, todo: TodoRecord) -> int:
-        """插入一条待办，返回自增 ID"""
+        """插入一条待办，返回自增 ID
+
+        sort_order 未指定（≤0）时自动放至当前末尾（MAX(sort_order)+1）。
+        """
         with self._cursor() as cur:
+            if todo.sort_order and todo.sort_order > 0:
+                order = float(todo.sort_order)
+            else:
+                cur.execute("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM todos")
+                order = cur.fetchone()[0]
             cur.execute(
                 """INSERT INTO todos (title, status, priority, note, due_date,
-                   source_type, source_ref, is_draft, created_at, updated_at, completed_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   source_type, source_ref, is_draft, created_at, updated_at,
+                   completed_at, sort_order, progress)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     todo.title, todo.status, todo.priority, todo.note, todo.due_date,
                     todo.source_type, todo.source_ref, int(todo.is_draft),
-                    todo.created_at, todo.updated_at, todo.completed_at,
+                    todo.created_at, todo.updated_at, todo.completed_at, order,
+                    int(getattr(todo, "progress", 0) or 0),
                 ),
             )
             return cur.lastrowid
@@ -808,7 +858,7 @@ class Database:
         with self._cursor() as cur:
             cur.execute(
                 """SELECT id, title, status, priority, note, due_date, source_type,
-                   source_ref, is_draft, created_at, updated_at, completed_at
+                   source_ref, is_draft, created_at, updated_at, completed_at, sort_order, progress
                    FROM todos WHERE id = ?""",
                 (todo_id,),
             )
@@ -843,7 +893,7 @@ class Database:
         with self._cursor() as cur:
             cur.execute(
                 f"""SELECT id, title, status, priority, note, due_date, source_type,
-                    source_ref, is_draft, created_at, updated_at, completed_at
+                    source_ref, is_draft, created_at, updated_at, completed_at, sort_order, progress
                     FROM todos{where}
                     ORDER BY created_at DESC""",
                 params,
@@ -862,7 +912,8 @@ class Database:
         """
         allowed = {
             "title", "status", "priority", "note", "due_date", "is_draft",
-            "updated_at", "completed_at", "source_type", "source_ref",
+            "updated_at", "completed_at", "source_type", "source_ref", "sort_order",
+            "progress",
         }
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:
@@ -883,6 +934,63 @@ class Database:
             cur.execute("DELETE FROM todos WHERE id = ?", (todo_id,))
             return cur.rowcount > 0
 
+    def reorder_todos(self, items: list[dict]) -> int:
+        """批量更新待办排序（仅改 sort_order，纯展示序调整，不动 updated_at）
+
+        Args:
+            items: [{"id": int, "sort_order": float}, ...]（前端算好新序后传入，
+                   通常用两值中间插值，避免整体重排）
+        Returns:
+            实际更新的行数
+        """
+        if not items:
+            return 0
+        updated = 0
+        with self._cursor() as cur:
+            for it in items:
+                cur.execute(
+                    "UPDATE todos SET sort_order = ? WHERE id = ?",
+                    (float(it["sort_order"]), int(it["id"])),
+                )
+                updated += cur.rowcount
+        return updated
+
+    def get_todo_stats(self, today: str) -> dict:
+        """待办统计（4 指标，PRD v4.3 §4.7 口径）
+
+        Args:
+            today: "YYYY-MM-DD"（用于判定逾期）
+        Returns:
+            {total, today_pending, overdue, done}
+            - total: 全部已入库待办（is_draft=0，含 cancelled）
+            - today_pending: 未完成（pending/in_progress）且未逾期（无截止 或 due_date >= today）
+            - overdue: 未完成且逾期（due_date < today）
+            - done: status=done
+            cancelled 不计入 today_pending/overdue/done，但含在 total；
+            today_pending 与 overdue 互斥，合起来 = 全部未完成。
+        """
+        with self._cursor() as cur:
+            cur.execute(
+                """SELECT
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN status IN ('pending','in_progress')
+                             AND (due_date IS NULL OR due_date = '' OR due_date >= ?)
+                        THEN 1 ELSE 0 END) AS today_pending,
+                    SUM(CASE WHEN status IN ('pending','in_progress')
+                             AND due_date IS NOT NULL AND due_date != '' AND due_date < ?
+                        THEN 1 ELSE 0 END) AS overdue,
+                    SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done_count
+                    FROM todos WHERE is_draft = 0""",
+                (today, today),
+            )
+            row = cur.fetchone()
+        return {
+            "total": row[0] or 0,
+            "today_pending": row[1] or 0,
+            "overdue": row[2] or 0,
+            "done": row[3] or 0,
+        }
+
     @staticmethod
     def _row_to_todo(row) -> TodoRecord:
         """行记录转 TodoRecord"""
@@ -893,4 +1001,107 @@ class Database:
             is_draft=bool(row[8]),
             created_at=row[9], updated_at=row[10],
             completed_at=row[11] or "",
+            sort_order=float(row[12] or 0),
+            progress=int(row[13] or 0),
         )
+
+    # ==================== 待办推进建议（P2 §4.6） ====================
+
+    def insert_todo_advice(self, advice) -> int:
+        """插入一条推进建议；同 todo_id 已有 pending 建议则去重跳过（返回 0）
+
+        Returns:
+            新建记录 id；去重跳过返回 0
+        """
+        with self._cursor() as cur:
+            # 去重：同一待办已有未处理建议则不再重复生成
+            cur.execute(
+                "SELECT id FROM todo_advices WHERE todo_id = ? AND status = 'pending'",
+                (advice.todo_id,),
+            )
+            if cur.fetchone():
+                return 0
+            cur.execute(
+                """INSERT INTO todo_advices (todo_id, suggestion_type, reason,
+                   suggested_status, suggested_progress, status, source_date,
+                   created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    advice.todo_id, advice.suggestion_type, advice.reason,
+                    advice.suggested_status, advice.suggested_progress,
+                    advice.status, advice.source_date,
+                    advice.created_at, advice.updated_at,
+                ),
+            )
+            return cur.lastrowid
+
+    def query_todo_advices(self, status: str = "pending") -> list[dict]:
+        """查询推进建议（关联 todo 标题，前端展示用）
+
+        Returns:
+            [{id, todo_id, todo_title, suggestion_type, reason, suggested_status,
+              suggested_progress, status, source_date, created_at}, ...]
+            按 created_at 降序；关联 todo 已删除则标题显示「（待办已删除）」。
+        """
+        with self._cursor() as cur:
+            cur.execute(
+                """SELECT a.id, a.todo_id, t.title, a.suggestion_type, a.reason,
+                   a.suggested_status, a.suggested_progress, a.status,
+                   a.source_date, a.created_at
+                   FROM todo_advices a
+                   LEFT JOIN todos t ON t.id = a.todo_id
+                   WHERE a.status = ?
+                   ORDER BY a.created_at DESC""",
+                (status,),
+            )
+            rows = cur.fetchall()
+        result = []
+        for r in rows:
+            result.append({
+                "id": r[0], "todo_id": r[1], "todo_title": r[2] or "（待办已删除）",
+                "suggestion_type": r[3], "reason": r[4] or "",
+                "suggested_status": r[5] or "", "suggested_progress": r[6],
+                "status": r[7], "source_date": r[8] or "",
+                "created_at": r[9] or "",
+            })
+        return result
+
+    def query_advice(self, advice_id: int) -> dict | None:
+        """查单条建议（采纳时取 suggestion_type / suggested_* 用）"""
+        with self._cursor() as cur:
+            cur.execute(
+                """SELECT id, todo_id, suggestion_type, reason, suggested_status,
+                   suggested_progress, status FROM todo_advices WHERE id = ?""",
+                (advice_id,),
+            )
+            row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0], "todo_id": row[1], "suggestion_type": row[2],
+            "reason": row[3] or "", "suggested_status": row[4] or "",
+            "suggested_progress": row[5], "status": row[6],
+        }
+
+    def update_advice_status(self, advice_id: int, status: str) -> bool:
+        """更新建议状态（applied / dismissed）"""
+        with self._cursor() as cur:
+            cur.execute(
+                "UPDATE todo_advices SET status = ?, updated_at = ? WHERE id = ?",
+                (status, datetime.now().isoformat(), advice_id),
+            )
+            return cur.rowcount > 0
+
+    def record_todo_notify(self, todo_id: int, notify_date: str, notify_type: str) -> bool:
+        """记录待办通知；返回 True=本次首次可发（去重通过），False=今天已通知过（P3 §4.9）
+
+        PRIMARY KEY (todo_id, notify_date, notify_type) + INSERT OR IGNORE 实现去重，
+        每任务每日每类（overdue/upcoming）最多通知一次。
+        """
+        with self._cursor() as cur:
+            cur.execute(
+                "INSERT OR IGNORE INTO todo_notify_log (todo_id, notify_date, notify_type, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (todo_id, notify_date, notify_type, datetime.now().isoformat()),
+            )
+            return cur.rowcount > 0

@@ -541,7 +541,17 @@ export default function App() {
               }}
             />
           )}
-          {view === "todo" && <TodoView api={api} date={selectedDate || status?.today || ""} />}
+          {view === "todo" && (
+            <TodoView
+              api={api}
+              date={selectedDate || status?.today || ""}
+              onOpenReport={(rt, d) => {
+                setReportType(rt)
+                setSelectedDate(d)
+                navigate("report")
+              }}
+            />
+          )}
           {view === "settings" && <SettingsView api={api} apiConfig={apiConfig} />}
           {view === "about" && <AboutView />}
         </main>

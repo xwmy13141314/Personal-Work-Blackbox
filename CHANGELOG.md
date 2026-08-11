@@ -1,5 +1,34 @@
 # Changelog
 
+## v4.3.0 - 2026-08-11 — 待办看板增强 + 双库根治
+
+### 双库问题根治（架构修复）
+- **根因**：`get_app_root()`（src/main.py）对打包 exe（返回 `dist/`）与源码 python（返回项目根）解析出不同路径，导致 exe 与 python 各用一套 `data/blackbox.db`，长期使用数据分叉
+- **修复**：`get_app_root` 改为**智能检测**——打包 exe 启动时检测 `exe.parent.parent/src` 是否存在：存在（=开发者场景，exe 在项目内 dist/）则返回项目根，与源码运行共用同一套 config/data/logs；不存在（=外部用户场景，exe 单独分发）则返回 exe 同级目录，数据就近存放
+- 移除双库过渡期的一次性迁移函数 `_migrate_legacy_data`（根治后冗余）
+- `system_tray.py` / `gui.py` 中相对 cwd 的 `Path("./data")` 改为 `get_app_root()/"data"`，消除对启动目录的依赖
+- 合并后的权威主库：项目根 `data/blackbox.db`（11140 会话 / 43 日报 / 7 待办）；dist 旧库归档至 `data/backup_双库根治归档_20260811/` 后清理
+- exe 已重打包（含智能检测逻辑，验证日志确认 exe 与 python 读同一库）
+
+### 待办看板（§4.1-4.10）
+- **P1 三列看板**：@dnd-kit 拖拽（待办 / 进行中 / 已完成）+ sort_order 排序 + 来源下钻 + 4 统计卡片
+- **P2 进度跟踪**：progress 字段 + 100%↔done 状态联动（clamp [0,100]，纯拖拽改 status 不动 progress）
+- **P2-C AI 推进建议**：start / progress / stall 三类建议，日报生成后自动触发，入 todo_advices（去重），「采纳」才改待办
+- **P3-A 融合工作实况**：统计卡旁今日活动迷你环形图（MiniDonut 纯 SVG，复用 category_stats）
+- **P3-B 逾期顺延**：逾期待办红色提示条 + 一键批量顺延到今日
+- **P3-C toast 提醒**：todo_notify_log 去重表 + 后台线程每小时检查 + send_toast
+- **P4-A 数据导入导出**：`export_todos_json`（todos 全字段 JSON 备份，原始值不翻译）/ `import_todos_json`（mode=append 同标题跳过 / merge 更新内容不动 sort_order）；后端 + pywebview 接口保留，前端工具栏按用户决定只留 CSV 导出（备份/导入按钮精简）
+- **P4-B 多维视图**：viewMode 切换——按状态（三列可拖）/ 按来源（手动 / 日报 / 周报 / 月报 四列只读），看板上方 segmented 切换器；应用类别维度因 todo 无 category 字段未做
+
+### 修改文件
+- 核心架构：`src/main.py`（get_app_root 智能检测 + 移除 _migrate_legacy_data）、`src/ui/system_tray.py` / `src/ui/gui.py`（get_app_root 取代 Path("./data")）
+- 待办看板后端：`src/ui/web_api.py`、`src/storage/database.py`、`src/storage/data_exporter.py`、`src/ai/`（todo_extractor / prompt_engine / report_generator）
+- 前端：`界面优化/优化图设计为macOS风格/src/app/components/TodoView.tsx`（看板 + 多维视图）、`src/lib/pywebview.ts`
+- 测试：`tests/test_todo.py`（+TestTodoJsonBackup 7 个）
+
+### 测试
+- 全量 353 passed（v4.2.0 的 291 → P1-P4 新增 62）
+
 ## v4.2.0 - 2026-08-08 — 报告可视化 + 导出能力
 
 ### 报告导出（HTML / PDF）

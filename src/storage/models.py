@@ -101,3 +101,20 @@ class TodoRecord:
     created_at: str = ""            # ISO8601
     updated_at: str = ""            # ISO8601
     completed_at: str = ""          # 完成时间 ISO8601（仅 status=done 时有值）
+    sort_order: float = 0.0         # 同列内手动排序（REAL 便于两值中间插值，避免整体重排）
+    progress: int = 0               # 完成进度 0-100（P2）；满 100 自动联动 status=done，可回退
+
+
+@dataclass
+class TodoAdvice:
+    """待办推进建议（AI 结合当日活动给的建议，P2 §4.6；只建议，用户采纳/忽略）"""
+    id: Optional[int] = None
+    todo_id: int = 0                          # 关联的待办 id
+    suggestion_type: str = ""                 # start | progress | stall
+    reason: str = ""                          # 一句话依据
+    suggested_status: str = ""                # start 建议的目标状态（in_progress）
+    suggested_progress: Optional[int] = None  # progress 建议的目标进度 0-100
+    status: str = "pending"                   # pending | applied | dismissed
+    source_date: str = ""                     # 基于哪天的活动生成（日报日期）
+    created_at: str = ""
+    updated_at: str = ""

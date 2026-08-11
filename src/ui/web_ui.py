@@ -74,6 +74,8 @@ def run_web():
         height=720,
         min_size=(900, 600),
     )
+    # 把窗口引用注入 API，供文件保存对话框等使用
+    api.bind_window(window)
 
     # 窗口关闭时优雅释放引擎（含数据库）
     def _on_closing():

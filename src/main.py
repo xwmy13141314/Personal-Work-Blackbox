@@ -18,12 +18,18 @@ from threading import Event
 def get_app_root() -> Path:
     """获取应用根目录（兼容 PyInstaller 打包和源码运行）
 
-    打包版：exe 同级目录（exe 旁有 config/、data/ 等文件夹）
-    源码版：src/ 的上级目录
+    源码版：src/ 的上级目录（项目根）。
+    打包版：智能区分两种部署——
+      - 开发者：exe 在项目内 dist/ 子目录，其上级即项目根（检测到 src/ 目录
+        作为标志），与源码运行共用同一套 config/ data/ logs/，杜绝双库分叉；
+      - 外部用户：exe 单独分发（下载到任意目录），data/ config/ 就近放 exe 同级。
     """
     if getattr(sys, 'frozen', False):
-        # 打包版：使用 exe 所在目录（而非上级目录）
-        return Path(sys.executable).parent
+        exe_parent = Path(sys.executable).parent
+        candidate = exe_parent.parent  # 若 exe 在 dist/，上级即项目根
+        if (candidate / "src").is_dir():  # 项目根标志 → 开发者场景
+            return candidate
+        return exe_parent  # 外部用户：data/config 在 exe 旁
     return Path(__file__).parent.parent
 
 
@@ -80,57 +86,12 @@ from src.storage.models import (
 logger = logging.getLogger(__name__)
 
 
-def _migrate_legacy_data(settings: Settings) -> None:
-    """一次性迁移：检测旧版本遗留的数据目录（exe 上级目录），自动合并到当前位置"""
-    if not getattr(sys, 'frozen', False):
-        return  # 仅打包版需要迁移
-
-    import shutil
-    import sqlite3
-
-    current_db = settings.db_path
-    # 旧版 get_app_root() 返回 exe 的 parent.parent（上级目录）
-    legacy_root = Path(sys.executable).parent.parent
-    legacy_db = (legacy_root / settings.storage["db_path"]).resolve()
-
-    # 无需迁移的条件：旧位置不存在，或与当前位置相同
-    if not legacy_db.exists() or legacy_db == current_db:
-        return
-
-    # 当前位置已有数据，跳过迁移
-    if current_db.exists():
-        conn = sqlite3.connect(str(current_db))
-        try:
-            count = conn.execute("SELECT count(*) FROM sessions").fetchone()[0]
-            if count > 0:
-                return  # 当前 DB 有数据，不覆盖
-        finally:
-            conn.close()
-
-    # 执行迁移
-    current_db.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(str(legacy_db), str(current_db))
-    logger.info("已从旧位置迁移数据库: %s → %s", legacy_db, current_db)
-
-    # 迁移日志目录
-    legacy_logs = (legacy_root / settings.storage["markdown_export_dir"]).resolve()
-    current_logs = settings.markdown_dir
-    if legacy_logs.exists() and legacy_logs != current_logs:
-        for f in legacy_logs.iterdir():
-            if f.is_file():
-                shutil.copy2(str(f), str(current_logs / f.name))
-        logger.info("已从旧位置迁移日志文件: %s → %s", legacy_logs, current_logs)
-
-
 class BlackboxEngine:
     """核心引擎：协调采集 → 处理 → 存储"""
 
     def __init__(self, config_path: str | Path | None = None):
         self._settings = Settings.get_instance(config_path)
         self._settings.ensure_dirs()
-
-        # 旧版数据迁移（仅打包版首次运行时执行）
-        _migrate_legacy_data(self._settings)
 
         # 初始化各层组件
         self._db = Database(
@@ -267,6 +228,9 @@ class BlackboxEngine:
         # 启动 REST API（若已在 __init__ 中启动则跳过）
         if self._rest_api and not self._rest_api.is_running:
             self._rest_api.start()
+
+        # 启动待办提醒检查（逾期/即将到期 toast，每小时一次，P3 §4.9）
+        self._todo_notify_thread()
 
     def stop(self):
         """停止采集引擎（保留数据库连接和键盘钩子，支持后续报告生成）"""
@@ -543,6 +507,119 @@ class BlackboxEngine:
 
         logger.info("从 %s 报告提取待办 %d 条，入库 %d 条", report_type, len(todos), inserted)
         return {"ok": True, "extracted": inserted}
+
+    def generate_todo_advices(self, date: str | None = None) -> dict:
+        """结合当日活动对未完成待办生成 AI 推进建议（P2 §4.6）
+
+        日报生成后或手动触发调用。只针对未完成（pending/in_progress）正式待办，
+        对照当日采集活动（query_app_usage_stats）生成建议入 todo_advices 表
+        （同待办已有 pending 建议则去重跳过）。只建议，不改待办状态。
+
+        Args:
+            date: 基于哪天的活动（默认今天）
+
+        Returns:
+            {"ok": bool, "generated": int, "error": str?}
+        """
+        if not self._todo_extractor:
+            return {"ok": False, "error": "AI 层未初始化，无法生成推进建议"}
+        if not self._db.is_connected:
+            return {"ok": False, "error": "数据库未连接"}
+
+        target_date = date or datetime.now().strftime("%Y-%m-%d")
+        todos = self._db.query_todos(include_drafts=False)
+        active = [t for t in todos if t.status in ("pending", "in_progress")]
+        if not active:
+            logger.info("无未完成待办，跳过推进建议生成")
+            return {"ok": True, "generated": 0}
+
+        # 当日活动摘要（与日报同源）
+        app_stats = self._db.query_app_usage_stats(target_date)
+        try:
+            advices = self._todo_extractor.advise_sync(active, app_stats)
+        except Exception:
+            logger.exception("推进建议生成失败")
+            return {"ok": False, "error": "推进建议生成失败，请检查网络与 API 配置"}
+
+        # 持久化（去重：同 todo_id 已有 pending 跳过）
+        from src.storage.models import TodoAdvice
+        now = datetime.now().isoformat()
+        inserted = 0
+        for a in advices:
+            try:
+                rec = TodoAdvice(
+                    todo_id=a["todo_id"],
+                    suggestion_type=a["type"],
+                    reason=a["reason"],
+                    suggested_status="in_progress" if a["type"] == "start" else "",
+                    suggested_progress=a.get("suggested_progress"),
+                    status="pending",
+                    source_date=target_date,
+                    created_at=now,
+                    updated_at=now,
+                )
+                if self._db.insert_todo_advice(rec):
+                    inserted += 1
+            except Exception:
+                logger.exception("插入推进建议失败: %s", a)
+
+        logger.info("生成推进建议 %d 条，新入库 %d 条（去重 %d）",
+                    len(advices), inserted, len(advices) - inserted)
+        return {"ok": True, "generated": inserted}
+
+    def check_and_notify_todos(self) -> dict:
+        """检查逾期待办与即将到期待办，发桌面 toast（每任务每日每类最多 1 次，P3 §4.9）
+
+        overdue: due_date < 今天；upcoming: due_date == 明天。
+        只对未完成（pending/in_progress）正式待办（有 due_date）触发。
+
+        Returns:
+            {"ok": bool, "notified": int, "error": str?}
+        """
+        if not self._db.is_connected:
+            return {"ok": False, "error": "数据库未连接"}
+        from src.ui.notification import send_toast
+        from datetime import timedelta
+        now = datetime.now()
+        today = now.strftime("%Y-%m-%d")
+        tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+
+        todos = self._db.query_todos(include_drafts=False)
+        active = [t for t in todos if t.status in ("pending", "in_progress") and t.due_date]
+        notified = 0
+        for t in active:
+            ntype = None
+            if t.due_date < today:
+                ntype = "overdue"
+            elif t.due_date == tomorrow:
+                ntype = "upcoming"
+            if ntype and self._db.record_todo_notify(t.id, today, ntype):
+                title = "⏰ 待办逾期" if ntype == "overdue" else "📅 待办即将到期"
+                send_toast(title, t.title[:60])
+                notified += 1
+        if notified:
+            logger.info("待办提醒：发送 %d 条 toast", notified)
+        return {"ok": True, "notified": notified}
+
+    def _todo_notify_thread(self):
+        """后台线程：启动后稍延迟检查一次，之后每小时检查待办提醒（P3 §4.9）"""
+        import threading
+
+        def _loop():
+            time.sleep(15)  # 启动延迟，等窗口与采集就绪
+            try:
+                self.check_and_notify_todos()
+            except Exception:
+                logger.exception("待办提醒检查异常（启动）")
+            while self._running:
+                time.sleep(3600)
+                try:
+                    self.check_and_notify_todos()
+                except Exception:
+                    logger.exception("待办提醒检查异常")
+
+        t = threading.Thread(target=_loop, daemon=True, name="TodoNotify")
+        t.start()
 
     def extract_timedist_from_report(self, report_type: str, date: str) -> dict:
         """提取时间分布数据（供报告页环形图 / 导出 HTML 使用）

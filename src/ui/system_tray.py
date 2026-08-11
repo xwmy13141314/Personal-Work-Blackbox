@@ -126,8 +126,9 @@ class SystemTray:
 
     def _open_data_dir(self, icon, item):
         import subprocess
-        data_dir = Path("./data")
-        data_dir.mkdir(exist_ok=True)
+        from src.main import get_app_root
+        data_dir = get_app_root() / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
         subprocess.Popen(f'explorer "{data_dir.resolve()}"')
 
     def _quit(self, icon, item):
