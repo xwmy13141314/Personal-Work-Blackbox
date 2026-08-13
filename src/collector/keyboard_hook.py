@@ -365,6 +365,7 @@ class KeyboardHook:
         self._kb_hook = None
         self._ime_hook = None
         self._hook_thread: threading.Thread | None = None
+        self._watchdog_thread: threading.Thread | None = None
         self._thread_id: int | None = None
 
         self._ctrl_pressed = False
@@ -396,6 +397,12 @@ class KeyboardHook:
         )
         self._hook_thread.start()
 
+        # 启动看门狗：钩子线程崩溃后自动重启（防静默停采）
+        self._watchdog_thread = threading.Thread(
+            target=self._watchdog_loop, daemon=True, name="KbHookWatchdog",
+        )
+        self._watchdog_thread.start()
+
         # 等待线程安装完成（最多2秒）
         for _ in range(20):
             if self._installed:
@@ -408,56 +415,96 @@ class KeyboardHook:
             logger.error("键盘钩子线程启动超时")
 
     def _hook_thread_main(self):
-        """专用线程主函数：安装钩子 + 运行消息泵"""
-        thread_id = _kernel32.GetCurrentThreadId()
-        self._thread_id = thread_id
+        """专用线程主函数：安装钩子 + 运行消息泵（含崩溃保护，由看门狗自恢复）"""
+        try:
+            thread_id = _kernel32.GetCurrentThreadId()
+            self._thread_id = thread_id
 
-        h_module = _kernel32.GetModuleHandleW(None)
+            h_module = _kernel32.GetModuleHandleW(None)
 
-        # 1. 安装 WH_KEYBOARD_LL
-        self._kb_hook = _user32.SetWindowsHookExW(
-            WH_KEYBOARD_LL, KeyboardHook._hook_proc_ref, h_module, 0,
-        )
-        if self._kb_hook:
-            logger.info("WH_KEYBOARD_LL 钩子已安装 (thread_id=%d)", thread_id)
-        else:
-            err = _kernel32.GetLastError()
-            logger.error("WH_KEYBOARD_LL 钩子安装失败 (error=%d)", err)
-            return
+            # 1. 安装 WH_KEYBOARD_LL
+            self._kb_hook = _user32.SetWindowsHookExW(
+                WH_KEYBOARD_LL, KeyboardHook._hook_proc_ref, h_module, 0,
+            )
+            if self._kb_hook:
+                logger.info("WH_KEYBOARD_LL 钩子已安装 (thread_id=%d)", thread_id)
+            else:
+                err = _kernel32.GetLastError()
+                logger.error("WH_KEYBOARD_LL 钩子安装失败 (error=%d)", err)
+                return
 
-        # 2. 安装 WH_GETMESSAGE（IME 消息钩子，同线程）
-        self._ime_hook = _user32.SetWindowsHookExW(
-            WH_GETMESSAGE, KeyboardHook._ime_hook_proc_ref, h_module, thread_id,
-        )
-        if self._ime_hook:
-            logger.info("IME 消息钩子已安装 (WH_GETMESSAGE, thread_id=%d)", thread_id)
-        else:
-            err = _kernel32.GetLastError()
-            logger.warning("IME 消息钩子安装失败 (error=%d)", err)
+            # 2. 安装 WH_GETMESSAGE（IME 消息钩子，同线程）
+            self._ime_hook = _user32.SetWindowsHookExW(
+                WH_GETMESSAGE, KeyboardHook._ime_hook_proc_ref, h_module, thread_id,
+            )
+            if self._ime_hook:
+                logger.info("IME 消息钩子已安装 (WH_GETMESSAGE, thread_id=%d)", thread_id)
+            else:
+                err = _kernel32.GetLastError()
+                logger.warning("IME 消息钩子安装失败 (error=%d)", err)
 
-        self._installed = True
+            self._installed = True
 
-        # 3. 消息泵：GetMessageW 循环
-        # WH_KEYBOARD_LL 回调需要此消息泵来传递
-        logger.info("消息泵已启动，等待键盘事件...")
-        msg = ctypes.wintypes.MSG()
+            # 3. 消息泵：GetMessageW 循环
+            logger.info("消息泵已启动，等待键盘事件...")
+            msg = ctypes.wintypes.MSG()
+            while not self._stop_flag:
+                ret = _user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
+                if ret <= 0:  # WM_QUIT 或错误
+                    break
+                _user32.DispatchMessageW(ctypes.byref(msg))
+
+            logger.info("消息泵已停止 (events=%d)", self._event_count)
+        except Exception:
+            logger.exception("键盘钩子线程异常崩溃")
+        finally:
+            # 4. 确保钩子卸载 + 状态重置（崩溃或正常退出都执行）
+            if self._kb_hook:
+                try:
+                    _user32.UnhookWindowsHookEx(self._kb_hook)
+                except Exception:
+                    pass
+                self._kb_hook = None
+            if self._ime_hook:
+                try:
+                    _user32.UnhookWindowsHookEx(self._ime_hook)
+                except Exception:
+                    pass
+                self._ime_hook = None
+            self._installed = False
+            self._thread_id = None
+
+    def _watchdog_loop(self):
+        """看门狗：钩子线程意外退出后自动重启（防静默停采），最多重试 5 次防崩溃循环"""
+        restarts = 0
         while not self._stop_flag:
-            ret = _user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
-            if ret <= 0:  # WM_QUIT 或错误
+            time.sleep(5)
+            if self._stop_flag:
                 break
-            _user32.DispatchMessageW(ctypes.byref(msg))
-
-        logger.info("消息泵已停止 (events=%d)", self._event_count)
-
-        # 4. 卸载钩子
-        if self._kb_hook:
-            _user32.UnhookWindowsHookEx(self._kb_hook)
-            self._kb_hook = None
-        if self._ime_hook:
-            _user32.UnhookWindowsHookEx(self._ime_hook)
-            self._ime_hook = None
-
-        self._installed = False
+            t = self._hook_thread
+            if t is not None and not t.is_alive():
+                if restarts >= 5:
+                    logger.error("键盘钩子连续崩溃 %d 次，已放弃自恢复", restarts)
+                    break
+                restarts += 1
+                logger.warning("键盘钩子线程异常退出，第 %d 次尝试重启...", restarts)
+                self._installed = False
+                self._thread_id = None
+                try:
+                    self._hook_thread = threading.Thread(
+                        target=self._hook_thread_main, daemon=True, name="KbHookThread",
+                    )
+                    self._hook_thread.start()
+                    for _ in range(20):
+                        if self._installed:
+                            break
+                        time.sleep(0.1)
+                    if self._installed:
+                        logger.info("键盘钩子已自恢复 (thread_id=%s)", self._thread_id)
+                    else:
+                        logger.error("键盘钩子重启后安装超时")
+                except Exception:
+                    logger.exception("键盘钩子重启异常")
 
     def stop(self):
         """停止键盘监听（发送 WM_QUIT 到钩子线程）"""

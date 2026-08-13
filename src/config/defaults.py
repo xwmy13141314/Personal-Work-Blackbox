@@ -11,13 +11,30 @@ DEFAULTS = {
     },
     "privacy": {
         "app_blacklist": [
+            # 密码管理器
             "1password.exe",
             "bitwarden.exe",
             "dashlane.exe",
             "keepass.exe",
             "keepassxc.exe",
+            # API key/凭据管理工具
+            "cc-switch.exe",
+            # 银行/支付钱包
+            "alipaywallet.exe",
+            "alipaypaywallet.exe",
+            # 远程桌面（密码输入风险高）
+            "mstsc.exe",
+            "anydesk.exe",
+            "teamviewer.exe",
+            "todesk.exe",
+            "sunloginclient.exe",
+            # SSH/远程登录客户端
+            "putty.exe",
+            "mobaxterm.exe",
+            "xshell.exe",
+            "securecrt.exe",
         ],
-        "title_filter_keywords": ["银行", "bank", "登录", "login"],
+        "title_filter_keywords": ["银行", "bank", "登录", "login", "sign in", "网银", "账号密码", "inprivate", "无痕"],
         "custom_filter_patterns": [],
         "privacy_mode_duration": 30,
     },

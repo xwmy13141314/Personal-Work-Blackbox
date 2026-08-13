@@ -228,20 +228,19 @@ data/                            # 数据 + 日志 + 归档
 .github/workflows/               # CI 流水线
 ```
 
-## Personal Recorder 模块（可选）
-
-仓库另含 `src/personal_recorder` 事件化记录器（v3.0 引入），支持统一事件模型、inbox 接入、Git / Shell / 浏览器历史快照、macOS 采集、`.ics` 导出等。与 Web GUI 并行，互不依赖。
-
-```bash
-PYTHONPATH=src python3 -m personal_recorder init-db
-PYTHONPATH=src python3 -m personal_recorder build-day --date 2026-07-03
-```
-
-详情见 `CHANGELOG.md` 的 v3.0 条目。
-
 ## 更新日志
 
 详见 `CHANGELOG.md`。
+
+### v4.3.1 (2026-08-13) — 安全加固
+
+- **密钥隔离**：API Key 改由环境变量 / `config/.secrets.yaml`（已 gitignore）提供，`config.yaml` 仅保留占位符；`save_api_config` 重写（model/base_url→config.yaml，api_key→.secrets.yaml）
+- **隐私过滤增强**：`sk-` 正则升级（支持 sk-proj-/下划线/连字符）；剪贴板密码关键词检测生效（filter_clipboard 加 context）
+- **应用黑名单扩充至 17 个**：新增银行 / 钱包 / 密码管理器类应用
+- **运行时健壮性**：键盘钩子线程看门狗（崩溃自恢复）+ session 写入 3 次重试
+- **待办排序**：看板列内叠加优先级排序（urgent > high > normal > low）
+- **死代码清理**：移除 `personal_recorder` 死模块（38 文件，约 2857 行）
+- 版本号前后端统一为 4.3.1；测试基线 353 passed
 
 ### v4.3.0 (2026-08-11) — 待办看板增强 + 双库根治
 

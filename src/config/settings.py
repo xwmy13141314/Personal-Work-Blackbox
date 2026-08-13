@@ -63,6 +63,20 @@ class Settings:
                 user_config = yaml.safe_load(f) or {}
             self._data = _deep_merge(DEFAULTS, user_config)
 
+        # 独立密钥文件覆盖（config/.secrets.yaml，gitignored）
+        # 真实 key 存于此文件而非 config.yaml，避免明文落盘于可公开配置
+        if self._config_path:
+            secrets_path = self._config_path.parent / ".secrets.yaml"
+            if secrets_path.exists():
+                try:
+                    with open(secrets_path, "r", encoding="utf-8") as f:
+                        secrets = yaml.safe_load(f) or {}
+                    for prov, prov_cfg in secrets.items():
+                        if isinstance(prov_cfg, dict) and prov_cfg.get("api_key"):
+                            self._data.setdefault("ai", {}).setdefault(prov, {})["api_key"] = prov_cfg["api_key"]
+                except Exception:
+                    logger.warning("加载 .secrets.yaml 失败，已跳过", exc_info=True)
+
         # 环境变量覆盖 API Key（避免密钥明文存储在 config.yaml）
         ai_config = self._data.get("ai", {})
         for provider_name, prov_cfg in ai_config.items():

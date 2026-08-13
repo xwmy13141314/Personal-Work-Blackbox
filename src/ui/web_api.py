@@ -16,7 +16,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_APP_VERSION = "4.2.0"
+_APP_VERSION = "4.3.1"
 
 
 class BlackboxAPI:
@@ -787,35 +787,52 @@ class BlackboxAPI:
         }
 
     def save_api_config(self, provider: str, base_url: str, model: str, api_key: str) -> dict:
-        """保存 AI 配置到 config.yaml（重启生效，不热重载）
+        """保存 AI 配置（重启生效，不热重载）
 
-        api_key 留空则保留原值，避免误清空已配置的 Key。
+        model/base_url 写入 config.yaml；api_key 写入独立 config/.secrets.yaml（gitignored），
+        不明文落盘 config.yaml。api_key 留空则保留已配置的 Key。
         """
         import shutil
         import yaml
         from src.main import get_app_root
 
+        PLACEHOLDER = "your-api-key-here"
         try:
             provider = (provider or "").strip()
             if not provider:
                 return {"ok": False, "error": "提供商不能为空"}
             config_path = get_app_root() / "config" / "config.yaml"
+            secrets_path = get_app_root() / "config" / ".secrets.yaml"
             if not config_path.exists():
                 return {"ok": False, "error": f"配置文件不存在: {config_path}"}
 
             with open(config_path, "r", encoding="utf-8") as f:
                 cfg = yaml.safe_load(f) or {}
 
-            # 备份原文件（保留原注释）
+            # 备份 config.yaml（现已不含真实 key，备份安全）
             bak = config_path.with_suffix(".yaml.bak")
             shutil.copy2(config_path, bak)
 
             ai = cfg.setdefault("ai", {})
-            if not api_key:
-                api_key = ai.get(provider, {}).get("api_key", "")
+
+            # 抢救现有真实 key（可能在 config.yaml 旧版或 .secrets.yaml），统一迁入 .secrets
+            old_cfg_key = ai.get(provider, {}).get("api_key", "")
+            secrets: dict = {}
+            if secrets_path.exists():
+                try:
+                    with open(secrets_path, "r", encoding="utf-8") as f:
+                        secrets = yaml.safe_load(f) or {}
+                except Exception:
+                    secrets = {}
+            old_sec_key = secrets.get(provider, {}).get("api_key", "")
+            effective_key = api_key or old_sec_key or (
+                old_cfg_key if old_cfg_key and old_cfg_key != PLACEHOLDER else ""
+            )
+
+            # config.yaml 只存 model/base_url，api_key 保持占位符
             ai["default_provider"] = provider
             ai[provider] = {
-                "api_key": api_key or "",
+                "api_key": PLACEHOLDER,
                 "model": model or "",
                 "base_url": (base_url or "").rstrip("/"),
             }
@@ -823,8 +840,15 @@ class BlackboxAPI:
             with open(config_path, "w", encoding="utf-8") as f:
                 f.write("# Personal Work Blackbox 配置文件\n")
                 f.write("# 由设置页编辑，原注释版本见 config.yaml.bak\n")
+                f.write("# API Key 不存于此文件，见 config/.secrets.yaml 或环境变量 {PROVIDER}_API_KEY\n")
                 f.write("# 修改后需重启应用生效\n\n")
                 yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+
+            # 真实 key 写独立 .secrets.yaml（gitignored）
+            if effective_key:
+                secrets.setdefault(provider, {})["api_key"] = effective_key
+                with open(secrets_path, "w", encoding="utf-8") as f:
+                    yaml.dump(secrets, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
 
             return {"ok": True, "restart_needed": True, "backup": str(bak)}
         except Exception as e:
@@ -832,8 +856,12 @@ class BlackboxAPI:
             return {"ok": False, "error": str(e)}
 
     def test_api_config(self, provider: str, base_url: str, model: str, api_key: str) -> dict:
-        """测试连接（不保存）：TCP 连通性 + 最小 chat 请求验证 Key/模型"""
-        import asyncio
+        """测试连接（不保存）：TCP 连通性 + 最小 chat 请求验证 Key/模型
+
+        用 max_tokens=1 的轻量请求替代完整 complete()——推理模型（如 glm-4.5-flash）
+        不限制 token 时单次回复需 30s+，会触发前端超时误判失败；轻量请求 2-3s 即可验证 Key。
+        """
+        import httpx
         from src.ai.llm_client import OpenAICompatibleProvider
 
         try:
@@ -847,8 +875,17 @@ class BlackboxAPI:
             if not ok:
                 return {"ok": False, "error": msg}
 
-            asyncio.run(p.complete([{"role": "user", "content": "ping"}]))
+            # 轻量验证：max_tokens=1 最小请求，只验 Key/模型有效（不生成完整回复）
+            resp = httpx.post(
+                f"{p._base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={"model": model, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1},
+                timeout=30,
+            )
+            resp.raise_for_status()
             return {"ok": True, "detail": "连接成功，API Key 与模型有效"}
+        except httpx.HTTPStatusError as e:
+            return {"ok": False, "error": f"API 返回错误 {e.response.status_code}：{e.response.text[:120]}"}
         except Exception as e:
             logger.exception("测试连接失败")
             return {"ok": False, "error": f"连接失败: {type(e).__name__}: {e}"}

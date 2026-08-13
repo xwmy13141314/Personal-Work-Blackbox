@@ -26,7 +26,7 @@ class PrivacyFilter:
     BANK_CARD_PATTERN = re.compile(r'\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{0,4}')  # 银行卡号 16-19 位
     # 新增：常见敏感凭证模式
     JWT_PATTERN = re.compile(r'eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+')  # JWT Token
-    API_KEY_PATTERN = re.compile(r'sk-[A-Za-z0-9]{20,}')           # OpenAI 风格 API Key
+    API_KEY_PATTERN = re.compile(r'sk-[A-Za-z0-9_-]{20,}')          # API Key（支持 sk-proj-/下划线/连字符新格式）
     IPV4_PATTERN = re.compile(r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b')  # IPv4 地址
     PRIVATE_KEY_PATTERN = re.compile(r'-----BEGIN [A-Z ]+PRIVATE KEY-----')  # PEM 私钥头
     URL_CRED_PATTERN = re.compile(r'https?://[^:\s]+:[^@\s]+@')    # URL 内嵌凭据
@@ -152,9 +152,9 @@ class PrivacyFilter:
 
         return result, filtered
 
-    def filter_clipboard(self, content: str) -> Tuple[str, bool]:
-        """过滤剪贴板内容（应用同样的内容级规则）"""
-        return self.filter_text(content)
+    def filter_clipboard(self, content: str, context: str = "") -> Tuple[str, bool]:
+        """过滤剪贴板内容（应用同样的内容级规则，含密码上下文检测）"""
+        return self.filter_text(content, context=context)
 
     def activate_privacy_mode(self, duration_minutes: float | None = None):
         """激活隐私模式（临时停止所有记录）"""

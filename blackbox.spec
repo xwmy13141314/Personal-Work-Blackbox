@@ -119,9 +119,6 @@ a = Analysis(
         'IPython',
         'pytest',
         'pytest_asyncio',
-        # 排除 personal_recorder（macOS 专用模块，不影响 Windows 打包）
-        'src.personal_recorder',
-        'src.personal_recorder.*',
         # 排除未使用的大型库
         'tkinter',
         'unittest',

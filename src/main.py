@@ -803,8 +803,11 @@ class BlackboxEngine:
             if self._privacy_filter.should_pause_recording(ctx.process_name, ctx.window_title):
                 return
 
-        # 隐私过滤
-        filtered_content, was_filtered = self._privacy_filter.filter_clipboard(record.content)
+        # 隐私过滤（传窗口标题作为上下文，激活密码关键词脱敏）
+        clip_title = self._window_tracker.current_context.window_title if self._window_tracker else ""
+        filtered_content, was_filtered = self._privacy_filter.filter_clipboard(
+            record.content, context=clip_title
+        )
 
         # 获取来源信息
         source_process = ""
@@ -887,11 +890,18 @@ class BlackboxEngine:
         logger.info("会话持久化: process=%s, segments=%d, active=%.0fs",
                      session.process_name, len(seg_records), session.active_seconds)
 
-        # 原子性批量插入（单事务）
-        try:
-            self._db.insert_session_with_segments(session_record, seg_records)
-        except Exception:
-            logger.exception("会话批量持久化异常")
+        # 原子性批量插入（单事务，含重试应对瞬时 DB 锁）
+        for attempt in range(3):
+            try:
+                self._db.insert_session_with_segments(session_record, seg_records)
+                break
+            except Exception:
+                if attempt < 2:
+                    logger.warning("会话持久化失败（第 %d 次），0.5s 后重试", attempt + 1)
+                    time.sleep(0.5)
+                else:
+                    logger.exception("会话持久化 3 次重试均失败，放弃（process=%s, segments=%d）",
+                                     session.process_name, len(seg_records))
 
     # ==================== 超时检查 ====================
 

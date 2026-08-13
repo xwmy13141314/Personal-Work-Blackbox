@@ -55,6 +55,11 @@ const PRI_META: Record<TodoPriority, { label: string; chip: string; bar: string 
   low: { label: "低", chip: "text-[var(--wt-text-muted)] bg-black/[0.06]", bar: "#8e8e93" },
 };
 
+// 优先级排序权重（PRD §4.4：优先级 高→中→低 主序，同优先级按 sort_order 微调）
+const PRIORITY_RANK: Record<TodoPriority, number> = { urgent: 0, high: 1, normal: 2, low: 3 };
+const byPriorityThenOrder = (a: Todo, b: Todo) =>
+  (PRIORITY_RANK[a.priority] ?? 2) - (PRIORITY_RANK[b.priority] ?? 2) || a.sort_order - b.sort_order;
+
 // 看板三列
 const COLUMNS: { key: TodoStatus; label: string; dot: string }[] = [
   { key: "pending", label: "待办", dot: "#8e8e93" },
@@ -397,7 +402,7 @@ export function TodoView({
     // 目标列其余卡片（排除被拖项），按 sort_order 排
     const colItems = todos
       .filter((t) => t.status === newStatus && t.id !== activeId)
-      .sort((a, b) => a.sort_order - b.sort_order);
+      .sort(byPriorityThenOrder);
 
     // 插入位置：over 为列容器 → 末尾；否则 over 在 colItems 中的索引
     let insertIdx = colItems.length;
@@ -423,7 +428,7 @@ export function TodoView({
   const activeColumns = viewMode === "status" ? COLUMNS : SOURCE_COLUMNS;
   const colKeyOf = (t: Todo) => (viewMode === "status" ? t.status : t.source_type) as string;
   // 列内卡片（按 sort_order）
-  const colOf = (key: string) => todos.filter((t) => colKeyOf(t) === key).sort((a, b) => a.sort_order - b.sort_order);
+  const colOf = (key: string) => todos.filter((t) => colKeyOf(t) === key).sort(byPriorityThenOrder);
 
   // 统计卡片
   const statCards: { label: string; value: number; color: string }[] = [
