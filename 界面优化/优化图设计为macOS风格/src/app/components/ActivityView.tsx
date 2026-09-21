@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from "react";
-import { Activity, Search, Languages } from "lucide-react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
+import { Activity, Search, Languages, Sparkles } from "lucide-react";
 import { fmtDuration, Empty } from "@/app/lib/utils";
 import type { BlackboxApi, SessionItem, SessionDetail, SearchResult } from "@/lib/pywebview";
 
@@ -26,6 +26,12 @@ export function ActivityView({
   const [showPinyinConverted, setShowPinyinConverted] = useState(false);
   const [convertedSegments, setConvertedSegments] = useState<string[] | null>(null);
   const [convertedResults, setConvertedResults] = useState<Record<number, string>>({});
+  // AI 增强转换状态（覆盖离线结果）
+  const [aiState, setAiState] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [aiSegments, setAiSegments] = useState<string[] | null>(null);
+  const [aiResults, setAiResults] = useState<Record<number, string>>({});
+  const aiPollRef = useRef(false);
 
   const q = search.trim();
   const mode: "search" | "list" = q ? "search" : "list";
@@ -94,6 +100,77 @@ export function ActivityView({
     return () => { cancelled = true; };
   }, [api, showPinyinConverted, results]);
 
+  // 切换识别开关 / 更换数据源时重置 AI 结果
+  useEffect(() => {
+    aiPollRef.current = false;
+    setAiState("idle");
+    setAiError(null);
+    setAiSegments(null);
+    setAiResults({});
+  }, [showPinyinConverted, detail, results]);
+
+  // AI 增强转换：当前可见文本批量一次 LLM 调用，轮询任务结果
+  const runAiConvert = useCallback(async () => {
+    if (!api || aiState === "loading") return;
+    const texts = mode === "search"
+      ? results.map((r) => (r.is_filtered ? "" : r.text))
+      : detail?.segments.map((seg) => (seg.is_filtered ? "" : seg.raw_text)) ?? [];
+    if (!texts.length) return;
+
+    setAiState("loading");
+    setAiError(null);
+    try {
+      const { task_id, error } = await api.convert_pinyin_ai(texts);
+      if (!task_id) {
+        setAiState("error");
+        setAiError(error || "AI 层未初始化");
+        return;
+      }
+      aiPollRef.current = true;
+      const MAX_POLL = 90;
+      const poll = async (attempt: number) => {
+        if (!aiPollRef.current) return;
+        if (attempt >= MAX_POLL) {
+          setAiState("error");
+          setAiError("AI 转换超时");
+          return;
+        }
+        const t = await api.get_task_status(task_id);
+        if (!aiPollRef.current) return;
+        if (!t) {
+          setAiState("error");
+          setAiError("任务已失效");
+          return;
+        }
+        if (t.status === "done") {
+          const aiTexts: string[] = t.result?.texts ?? [];
+          if (aiTexts.length === texts.length) {
+            if (mode === "search") {
+              const map: Record<number, string> = {};
+              results.forEach((r, i) => { map[r.id] = aiTexts[i] ?? r.text; });
+              setAiResults(map);
+            } else {
+              setAiSegments(aiTexts);
+            }
+            setAiState("done");
+          } else {
+            setAiState("error");
+            setAiError("AI 输出数量不匹配");
+          }
+        } else if (t.status === "failed") {
+          setAiState("error");
+          setAiError(t.error || "AI 转换失败");
+        } else {
+          setTimeout(() => poll(attempt + 1), 1000);
+        }
+      };
+      setTimeout(() => poll(1), 500);
+    } catch {
+      setAiState("error");
+      setAiError("AI 调用异常");
+    }
+  }, [api, aiState, mode, results, detail]);
+
   const openDetail = async (id: number) => {
     if (!api) return;
     if (expanded === id) {
@@ -127,6 +204,26 @@ export function ActivityView({
           <Languages className="w-3 h-3 inline mr-1" />
           {showPinyinConverted ? "智能识别" : "原文"}
         </button>
+        {showPinyinConverted && (
+          <button
+            onClick={runAiConvert}
+            disabled={aiState === "loading" || !(mode === "search" ? results.length : detail?.segments.length)}
+            className={`text-[11px] px-2 py-0.5 rounded-full transition-all disabled:opacity-40 ${
+              aiState === "done"
+                ? "bg-[var(--wt-accent)]/15 text-[var(--wt-accent)]"
+                : "text-[var(--wt-text-muted)] hover:bg-black/[0.06]"
+            }`}
+            title="用大模型重新识别拼音（需配置 API Key，效果更准）"
+          >
+            <Sparkles className="w-3 h-3 inline mr-1" />
+            {aiState === "loading" ? "AI 识别中..." : aiState === "done" ? "AI 已增强" : "AI 增强"}
+          </button>
+        )}
+        {showPinyinConverted && aiState === "error" && aiError && (
+          <span className="text-[10px] text-[var(--wt-text-muted)]" title={aiError}>
+            {aiError}
+          </span>
+        )}
       </div>
 
       <div className="space-y-2">
@@ -145,7 +242,21 @@ export function ActivityView({
                   </span>
                 </div>
                 <p className="text-[12px] mt-1 text-[var(--wt-text)] line-clamp-2 break-all">
-                  {r.is_filtered ? "（已隐私过滤）" : (showPinyinConverted ? (convertedResults[r.id] ?? r.text) : r.text)}
+                  {r.is_filtered
+                    ? "（已隐私过滤）"
+                    : showPinyinConverted
+                      ? (() => {
+                          const ai = aiResults[r.id];
+                          const conv = convertedResults[r.id];
+                          const shown = ai ?? conv ?? r.text;
+                          return (
+                            <>
+                              {ai !== undefined && <Sparkles className="w-3 h-3 inline mr-1 text-[var(--wt-accent)]" />}
+                              <span className={ai !== undefined ? "text-[var(--wt-accent)]" : undefined}>{shown}</span>
+                            </>
+                          );
+                        })()
+                      : r.text}
                 </p>
                 {r.window_title && <p className="text-[10px] text-[var(--wt-text-faint)] truncate mt-0.5">{r.window_title}</p>}
               </div>
@@ -181,7 +292,21 @@ export function ActivityView({
                     detail.segments.map((seg, i) => (
                       <p key={i} className="text-[11px] text-[var(--wt-text-secondary)] break-all">
                         <span className="text-[var(--wt-text-muted)] mr-1">{seg.timestamp.slice(11, 16)}</span>
-                        {seg.is_filtered ? "（已隐私过滤）" : (showPinyinConverted && convertedSegments ? convertedSegments[i] : seg.raw_text)}
+                        {seg.is_filtered
+                          ? "（已隐私过滤）"
+                          : showPinyinConverted
+                            ? (() => {
+                                const ai = aiSegments?.[i];
+                                const conv = convertedSegments?.[i];
+                                const shown = ai ?? conv ?? seg.raw_text;
+                                return (
+                                  <>
+                                    {ai !== undefined && <Sparkles className="w-3 h-3 inline mr-1 text-[var(--wt-accent)]" />}
+                                    <span className={ai !== undefined ? "text-[var(--wt-accent)]" : undefined}>{shown}</span>
+                                  </>
+                                );
+                              })()
+                            : seg.raw_text}
                       </p>
                     ))
                   ) : (

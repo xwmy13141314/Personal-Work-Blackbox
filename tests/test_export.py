@@ -210,6 +210,52 @@ class TestTodosCsv:
         assert data["来源引用"] == "2026-08-07"
 
 
+# ==================== 删除归档文件（v4.4：软删除同步落文件） ====================
+
+
+class TestTodoArchiveFiles:
+    def _archive(self, tmp_path, todos_and_times):
+        exporter = DataExporter(None)
+        paths = []
+        for todo, deleted_at in todos_and_times:
+            paths.append(exporter.append_todo_archive(todo, tmp_path, deleted_at=deleted_at))
+        return paths
+
+    def test_md_and_jsonl_written(self, tmp_path):
+        t = _todo("已删任务", status="done", progress=80, note="备注内容")
+        t.id = 7
+        self._archive(tmp_path, [(t, "2026-08-14T10:30:00")])
+        md = (tmp_path / "todo_archive_2026-08.md").read_text(encoding="utf-8")
+        assert "已删任务" in md
+        assert "10:30:00" in md  # 删除时间
+        assert "80%" in md  # 进度
+        jsonl = (tmp_path / "todo_archive.jsonl").read_text(encoding="utf-8")
+        assert '"title": "已删任务"' in jsonl
+        assert '"deleted_at": "2026-08-14T10:30:00"' in jsonl
+        assert '"id": 7' in jsonl
+
+    def test_append_only_two_writes(self, tmp_path):
+        """同月两次删除追加到同一文件，表头只写一次"""
+        a, b = _todo("任务A"), _todo("任务B")
+        self._archive(tmp_path, [(a, "2026-08-14T10:00:00"), (b, "2026-08-14T11:00:00")])
+        md = (tmp_path / "todo_archive_2026-08.md").read_text(encoding="utf-8")
+        assert md.count("| 删除时间 |") == 1  # 表头仅一份
+        assert "任务A" in md and "任务B" in md
+        assert len((tmp_path / "todo_archive.jsonl").read_text(encoding="utf-8").splitlines()) == 2
+
+    def test_month_split_files(self, tmp_path):
+        """不同月份删除 → 分属不同 md 文件"""
+        self._archive(tmp_path, [(_todo("七月任务"), "2026-07-31T23:00:00"), (_todo("八月任务"), "2026-08-01T09:00:00")])
+        assert (tmp_path / "todo_archive_2026-07.md").exists()
+        assert (tmp_path / "todo_archive_2026-08.md").exists()
+
+    def test_pipe_in_title_escaped(self, tmp_path):
+        """标题含 | 时转义，不破坏 Markdown 表格"""
+        self._archive(tmp_path, [(_todo("选 A|B 方案"), "2026-08-14T10:00:00")])
+        md = (tmp_path / "todo_archive_2026-08.md").read_text(encoding="utf-8")
+        assert "A\\|B" in md
+
+
 # ==================== DB 分类统计 → 时间分布 ====================
 
 

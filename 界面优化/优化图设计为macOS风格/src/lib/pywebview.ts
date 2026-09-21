@@ -30,7 +30,7 @@ export interface TimeDistItem {
 
 export interface TaskStatus {
   status: "pending" | "running" | "done" | "failed"
-  result: { markdown?: string; saved_path?: string; extracted?: number; time_dist?: TimeDistItem[]; svg?: string } | null
+  result: { markdown?: string; saved_path?: string; extracted?: number; time_dist?: TimeDistItem[]; svg?: string; insights_data?: InsightsData } | null
   error: string | null
 }
 
@@ -137,6 +137,15 @@ export interface Todo {
   completed_at: string
   sort_order: number // 同列内手动排序（REAL，拖拽中间插值）
   progress: number // 完成进度 0-100（P2）；满 100 联动 status=done，可回退
+  deleted_at: string // 软删除时间 ISO8601（空 = 未删除；v4.4 归档）
+}
+
+// 归档待办查询结果（v4.4：删除的待办可搜索/恢复/彻底删除）
+export interface ArchivedTodosResult {
+  ok: boolean
+  todos: Todo[]
+  total: number
+  error?: string
 }
 
 // 待办统计（看板顶部 4 指标，PRD v4.3 §4.7）
@@ -159,6 +168,101 @@ export interface TodoAdvice {
   status: "pending" | "applied" | "dismissed"
   source_date: string // 基于哪天的活动生成
   created_at: string
+}
+
+// 速记
+export interface Note {
+  id: number
+  content: string
+  source: string // manual | hotkey | report
+  source_ref: string
+  linked_todo_id: number | null
+  pinned: boolean
+  created_at: string
+  updated_at: string
+  deleted_at: string
+}
+
+// 项目
+export interface Project {
+  id: number
+  name: string
+  color: string
+  icon: string
+  description: string
+  created_at: string
+  updated_at: string
+  archived: boolean
+}
+
+// 驾驶舱摘要
+export interface DashboardSummary {
+  today_seconds: number
+  today_segments: number
+  todo_total: number
+  todo_pending: number
+  todo_overdue: number
+  todo_done: number
+  note_count: number
+  note_pinned: number
+  recent_reports: { type: string; date: string }[]
+  available_dates: string[]
+}
+
+// 全局搜索结果
+export interface GlobalSearchResult {
+  text_segments: {
+    id: number
+    session_id: number
+    timestamp: string
+    text: string
+    source: string
+    is_filtered: boolean
+    char_count: number
+  }[]
+  notes: Note[]
+  todos: {
+    id: number
+    title: string
+    status: string
+    priority: string
+    due_date: string
+    source_type: string
+    source_ref: string
+  }[]
+  reports: {
+    type: string
+    date: string
+    label?: string
+    excerpt: string
+  }[]
+}
+
+// 周度洞察（v5.1）
+export type InsightType = "best_time" | "warning" | "wow" | "goal"
+
+export interface InsightItem {
+  type: InsightType
+  title: string
+  body: string
+}
+
+export interface InsightsData {
+  week_label: string
+  week_start: string
+  week_end: string
+  insights: InsightItem[]
+  source: "llm" | "local"
+  generated_at: string
+  stats?: {
+    week_daily_avg_seconds: number
+    last_week_daily_avg_seconds: number
+    entertainment_ratio: number
+    streak_days: number
+    goal_hit_days: number
+    week_days: number
+  }
+  cached?: boolean
 }
 
 export interface BlackboxApi {
@@ -207,6 +311,8 @@ export interface BlackboxApi {
     has_pinyin: boolean;
     changed: boolean;
   }>
+  // 拼音转汉字（LLM 增强，批量一次调用，task 模式轮询 get_task_status）
+  convert_pinyin_ai: (texts: string[]) => Promise<{ task_id: string; error?: string }>
   // 隐私告知同意状态
   get_consent_status(): Promise<{ consented: boolean; window_only: boolean; timestamp: string }>
   set_consent(window_only: boolean): Promise<{ ok: boolean; error?: string }>
@@ -234,6 +340,10 @@ export interface BlackboxApi {
   update_todo: (todo_id: number, fields: Partial<Todo>) => Promise<{ ok: boolean; error?: string }>
   adopt_todos: (todo_ids: number[]) => Promise<{ ok: boolean; adopted?: number; error?: string }>
   delete_todo: (todo_id: number) => Promise<{ ok: boolean; error?: string }>
+  // 删除归档（v4.4）：查询/恢复/彻底删除软删除的待办
+  get_archived_todos: (keyword?: string, limit?: number, offset?: number) => Promise<ArchivedTodosResult>
+  restore_todo: (todo_id: number) => Promise<{ ok: boolean; error?: string }>
+  purge_todo: (todo_id: number) => Promise<{ ok: boolean; error?: string }>
   // 看板拖拽：批量改 sort_order（前端算好新序后传入）
   reorder_todos: (items: { id: number; sort_order: number }[]) => Promise<{ ok: boolean; updated?: number; error?: string }>
   // 看板顶部统计（4 指标）
@@ -247,6 +357,23 @@ export interface BlackboxApi {
   check_todo_notifications: () => Promise<{ ok: boolean; notified?: number; error?: string }>
   // 在资源管理器中定位导出的文件
   reveal_path: (path: string) => Promise<{ ok: boolean; error?: string }>
+  // 速记 CRUD
+  get_notes: (limit?: number, offset?: number) => Promise<Note[]>
+  add_note: (content: string, source?: string, source_ref?: string, linked_todo_id?: number | null, pinned?: boolean) => Promise<{ ok: boolean; id?: number; error?: string }>
+  update_note: (note_id: number, fields: Partial<Note>) => Promise<{ ok: boolean; error?: string }>
+  delete_note: (note_id: number) => Promise<{ ok: boolean; error?: string }>
+  // 项目 CRUD
+  get_projects: () => Promise<Project[]>
+  add_project: (name: string, color?: string, icon?: string, description?: string) => Promise<{ ok: boolean; id?: number; error?: string }>
+  update_project: (project_id: number, fields: Partial<Project>) => Promise<{ ok: boolean; error?: string }>
+  delete_project: (project_id: number) => Promise<{ ok: boolean; error?: string }>
+  // 驾驶舱聚合
+  get_dashboard_summary: () => Promise<DashboardSummary>
+  // 全局搜索
+  global_search: (keyword: string, limit?: number) => Promise<GlobalSearchResult>
+  // 周度洞察（v5.1）
+  get_weekly_insights: (date?: string) => Promise<InsightsData & { ok: boolean; cached?: boolean; error?: string }>
+  generate_weekly_insights: (date?: string) => Promise<{ task_id: string }>
 }
 
 declare global {
@@ -287,15 +414,18 @@ const mockToday = new Date().toISOString().slice(0, 10)
 let mockAdviceSeq = 50
 let mockAdvices: TodoAdvice[] = []
 let mockTodos: Todo[] = [
-  { id: 1, title: "完成 GR1003 BOM 成本核算并提交采购评审", status: "in_progress", priority: "high", note: "", due_date: mockToday, source_type: "daily_report", source_ref: "2026-08-06", is_draft: false, created_at: "2026-08-06T18:00:00", updated_at: "2026-08-06T18:00:00", completed_at: "", sort_order: 1, progress: 60 },
-  { id: 2, title: "跟进骨传导耳机样品交付期", status: "pending", priority: "normal", note: "", due_date: "", source_type: "daily_report", source_ref: "2026-08-06", is_draft: false, created_at: "2026-08-06T18:00:00", updated_at: "2026-08-06T18:00:00", completed_at: "", sort_order: 2, progress: 0 },
-  { id: 3, title: "补充 MatePad 11.5 竞品对标表的续航数据", status: "pending", priority: "high", note: "", due_date: "2026-08-09", source_type: "daily_report", source_ref: "2026-08-05", is_draft: false, created_at: "2026-08-05T18:00:00", updated_at: "2026-08-05T18:00:00", completed_at: "", sort_order: 3, progress: 20 },
-  { id: 4, title: "整理本周供应商邮件归档", status: "pending", priority: "low", note: "", due_date: "", source_type: "manual", source_ref: "", is_draft: false, created_at: "2026-08-05T10:00:00", updated_at: "2026-08-05T10:00:00", completed_at: "", sort_order: 4, progress: 0 },
-  { id: 5, title: "对讲机 GH650 LTE 专网参数确认", status: "done", priority: "normal", note: "", due_date: "", source_type: "daily_report", source_ref: "2026-08-04", is_draft: false, created_at: "2026-08-04T18:00:00", updated_at: "2026-08-04T18:00:00", completed_at: "2026-08-04T17:30:00", sort_order: 5, progress: 100 },
+  { id: 1, title: "完成 GR1003 BOM 成本核算并提交采购评审", status: "in_progress", priority: "high", note: "", due_date: mockToday, source_type: "daily_report", source_ref: "2026-08-06", is_draft: false, created_at: "2026-08-06T18:00:00", updated_at: "2026-08-06T18:00:00", completed_at: "", sort_order: 1, progress: 60, deleted_at: "" },
+  { id: 2, title: "跟进骨传导耳机样品交付期", status: "pending", priority: "normal", note: "", due_date: "", source_type: "daily_report", source_ref: "2026-08-06", is_draft: false, created_at: "2026-08-06T18:00:00", updated_at: "2026-08-06T18:00:00", completed_at: "", sort_order: 2, progress: 0, deleted_at: "" },
+  { id: 3, title: "补充 MatePad 11.5 竞品对标表的续航数据", status: "pending", priority: "high", note: "", due_date: "2026-08-09", source_type: "daily_report", source_ref: "2026-08-05", is_draft: false, created_at: "2026-08-05T18:00:00", updated_at: "2026-08-05T18:00:00", completed_at: "", sort_order: 3, progress: 20, deleted_at: "" },
+  { id: 4, title: "整理本周供应商邮件归档", status: "pending", priority: "low", note: "", due_date: "", source_type: "manual", source_ref: "", is_draft: false, created_at: "2026-08-05T10:00:00", updated_at: "2026-08-05T10:00:00", completed_at: "", sort_order: 4, progress: 0, deleted_at: "" },
+  { id: 5, title: "对讲机 GH650 LTE 专网参数确认", status: "done", priority: "normal", note: "", due_date: "", source_type: "daily_report", source_ref: "2026-08-04", is_draft: false, created_at: "2026-08-04T18:00:00", updated_at: "2026-08-04T18:00:00", completed_at: "2026-08-04T17:30:00", sort_order: 5, progress: 100, deleted_at: "" },
   // 草稿区
-  { id: 11, title: "整理 RugOne GR2002 PTT 骑行模式测试用例", status: "pending", priority: "normal", note: "", due_date: "", source_type: "daily_report", source_ref: mockToday, is_draft: true, created_at: "2026-08-07T09:00:00", updated_at: "2026-08-07T09:00:00", completed_at: "", sort_order: 11, progress: 0 },
-  { id: 12, title: "本周五前回复客户报价单", status: "pending", priority: "high", note: "", due_date: "", source_type: "daily_report", source_ref: mockToday, is_draft: true, created_at: "2026-08-07T09:00:00", updated_at: "2026-08-07T09:00:00", completed_at: "", sort_order: 12, progress: 0 },
-  { id: 13, title: "安排虚拟试衣 MVP 下周联调", status: "pending", priority: "low", note: "副业·可丢弃", due_date: "", source_type: "daily_report", source_ref: mockToday, is_draft: true, created_at: "2026-08-07T09:00:00", updated_at: "2026-08-07T09:00:00", completed_at: "", sort_order: 13, progress: 0 },
+  { id: 11, title: "整理 RugOne GR2002 PTT 骑行模式测试用例", status: "pending", priority: "normal", note: "", due_date: "", source_type: "daily_report", source_ref: mockToday, is_draft: true, created_at: "2026-08-07T09:00:00", updated_at: "2026-08-07T09:00:00", completed_at: "", sort_order: 11, progress: 0, deleted_at: "" },
+  { id: 12, title: "本周五前回复客户报价单", status: "pending", priority: "high", note: "", due_date: "", source_type: "daily_report", source_ref: mockToday, is_draft: true, created_at: "2026-08-07T09:00:00", updated_at: "2026-08-07T09:00:00", completed_at: "", sort_order: 12, progress: 0, deleted_at: "" },
+  { id: 13, title: "安排虚拟试衣 MVP 下周联调", status: "pending", priority: "low", note: "副业·可丢弃", due_date: "", source_type: "daily_report", source_ref: mockToday, is_draft: true, created_at: "2026-08-07T09:00:00", updated_at: "2026-08-07T09:00:00", completed_at: "", sort_order: 13, progress: 0, deleted_at: "" },
+  // 归档区（v4.4：软删除的待办，主列表不显示）
+  { id: 21, title: "核对 GR2002 包装丝印文件 v2", status: "done", priority: "normal", note: "", due_date: "", source_type: "daily_report", source_ref: "2026-07-28", is_draft: false, created_at: "2026-07-28T18:00:00", updated_at: "2026-07-29T10:00:00", completed_at: "2026-07-29T10:00:00", sort_order: 21, progress: 100, deleted_at: "2026-08-10T15:20:00" },
+  { id: 22, title: "整理骑行手套竞品价格表", status: "done", priority: "low", note: "含亚马逊前 10", due_date: "", source_type: "manual", source_ref: "", is_draft: false, created_at: "2026-07-25T09:00:00", updated_at: "2026-07-30T17:00:00", completed_at: "2026-07-30T17:00:00", sort_order: 22, progress: 100, deleted_at: "2026-08-12T09:05:00" },
 ]
 
 // 报告时间分布 mock（浏览器 dev 预览用）
@@ -303,6 +433,19 @@ const mockTimeDist: TimeDistItem[] = [
   { category: "开发编码", minutes: 180, percent: 45 },
   { category: "沟通会议", minutes: 120, percent: 30 },
   { category: "文档处理", minutes: 100, percent: 25 },
+]
+// 速记 mock 数据
+let mockNoteSeq = 200
+const mockNotes: Note[] = [
+  { id: 201, content: "骨传导耳机样品交付期推迟到下周三", source: "hotkey", source_ref: "", linked_todo_id: 2, pinned: true, created_at: "2026-09-06T10:30:00", updated_at: "2026-09-06T10:30:00", deleted_at: "" },
+  { id: 202, content: "竞品对标表续航数据需补充 MatePad 11.5 的测试结果", source: "manual", source_ref: "", linked_todo_id: null, pinned: false, created_at: "2026-09-06T14:20:00", updated_at: "2026-09-06T14:20:00", deleted_at: "" },
+  { id: 203, content: "客户反馈对讲机 GH650 LTE 专网参数需要重新确认", source: "report", source_ref: "2026-09-05", linked_todo_id: null, pinned: false, created_at: "2026-09-05T18:00:00", updated_at: "2026-09-05T18:00:00", deleted_at: "" },
+]
+// 项目 mock 数据
+let mockProjectSeq = 300
+const mockProjects: Project[] = [
+  { id: 301, name: "骨传导耳机", color: "#007AFF", icon: "🎧", description: "Q3 重点产品", created_at: "2026-08-01T09:00:00", updated_at: "2026-08-01T09:00:00", archived: false },
+  { id: 302, name: "对讲机 GH650", color: "#34C759", icon: "📻", description: "LTE 专网系列", created_at: "2026-07-15T09:00:00", updated_at: "2026-07-15T09:00:00", archived: false },
 ]
 const mockDonutSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="100%" viewBox="0 0 460 150" font-family="-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif">
 <circle cx="75" cy="75" r="55" fill="none" stroke="#0071e3" stroke-width="22" stroke-dasharray="154.9 191.3" stroke-dashoffset="0" transform="rotate(-90 75 75)"><title>开发编码: 45%</title></circle>
@@ -413,6 +556,7 @@ const mockApi: BlackboxApi = {
     { category: "其他", icon: "📦" },
   ],
   convert_pinyin: async (text: string) => ({ original: text, converted: text, has_pinyin: false, changed: false }),
+  convert_pinyin_ai: async () => ({ task_id: "", error: "AI 未配置" }),
   get_consent_status: async () => ({ consented: false, window_only: false, timestamp: "" }),
   set_consent: async () => ({ ok: true }),
   // 专注模式 mock
@@ -452,17 +596,17 @@ const mockApi: BlackboxApi = {
     const seeds = ["整理 RugOne GR2002 测试用例", "回复客户报价单", "安排下周联调"]
     seeds.forEach((title) => {
       mockTodoSeq++
-      mockTodos.push({ id: mockTodoSeq, title, status: "pending", priority: "normal", note: "", due_date: "", source_type: "daily_report", source_ref: mockToday, is_draft: true, created_at: now, updated_at: now, completed_at: "", sort_order: mockTodoSeq, progress: 0 })
+      mockTodos.push({ id: mockTodoSeq, title, status: "pending", priority: "normal", note: "", due_date: "", source_type: "daily_report", source_ref: mockToday, is_draft: true, created_at: now, updated_at: now, completed_at: "", sort_order: mockTodoSeq, progress: 0, deleted_at: "" })
     })
     return { task_id: "extract-mock" }
   },
   get_todos: async (status?: string | null, include_drafts = true, source_ref?: string | null) =>
-    mockTodos.filter((t) => (!status || t.status === status) && (include_drafts || !t.is_draft) && (!source_ref || t.source_ref === source_ref)),
+    mockTodos.filter((t) => !t.deleted_at && (!status || t.status === status) && (include_drafts || !t.is_draft) && (!source_ref || t.source_ref === source_ref)),
   get_todo: async (id: number) => mockTodos.find((t) => t.id === id) ?? null,
   add_todo: async (title: string, priority = "normal", due_date = "", note = "") => {
     mockTodoSeq++
     const now = new Date().toISOString()
-    mockTodos.push({ id: mockTodoSeq, title, status: "pending", priority: priority as TodoPriority, note, due_date, source_type: "manual", source_ref: "", is_draft: false, created_at: now, updated_at: now, completed_at: "", sort_order: mockTodoSeq, progress: 0 })
+    mockTodos.push({ id: mockTodoSeq, title, status: "pending", priority: priority as TodoPriority, note, due_date, source_type: "manual", source_ref: "", is_draft: false, created_at: now, updated_at: now, completed_at: "", sort_order: mockTodoSeq, progress: 0, deleted_at: "" })
     return { ok: true, id: mockTodoSeq }
   },
   update_todo: async (id: number, fields: Partial<Todo>) => {
@@ -494,8 +638,26 @@ const mockApi: BlackboxApi = {
     return { ok: true, adopted: n }
   },
   delete_todo: async (id: number) => {
+    // 软删除（模拟后端语义：主列表不显示，归档视图可查）
+    const t = mockTodos.find((x) => x.id === id && !x.deleted_at)
+    if (t) t.deleted_at = new Date().toISOString()
+    return { ok: !!t }
+  },
+  get_archived_todos: async (keyword = "", limit = 50, offset = 0) => {
+    const kw = keyword.trim().toLowerCase()
+    const hit = mockTodos
+      .filter((t) => t.deleted_at && (!kw || t.title.toLowerCase().includes(kw) || t.note.toLowerCase().includes(kw)))
+      .sort((a, b) => (a.deleted_at < b.deleted_at ? 1 : -1))
+    return { ok: true, todos: hit.slice(offset, offset + limit), total: hit.length }
+  },
+  restore_todo: async (id: number) => {
+    const t = mockTodos.find((x) => x.id === id && x.deleted_at)
+    if (t) t.deleted_at = ""
+    return { ok: !!t }
+  },
+  purge_todo: async (id: number) => {
     const before = mockTodos.length
-    mockTodos = mockTodos.filter((t) => t.id !== id)
+    mockTodos = mockTodos.filter((t) => !(t.id === id && t.deleted_at))
     return { ok: mockTodos.length < before }
   },
   reorder_todos: async (items: { id: number; sort_order: number }[]) => {
@@ -569,4 +731,109 @@ const mockApi: BlackboxApi = {
   },
   check_todo_notifications: async () => ({ ok: true, notified: 0 }),
   reveal_path: async (_path: string) => ({ ok: true }),
+  // 速记 mock
+  get_notes: async (_limit = 100, _offset = 0) => {
+    return mockNotes.filter((n) => !n.deleted_at)
+  },
+  add_note: async (content: string, source = "manual", source_ref = "", linked_todo_id: number | null = null, pinned = false) => {
+    mockNoteSeq++
+    const now = new Date().toISOString()
+    const note: Note = {
+      id: mockNoteSeq, content, source, source_ref,
+      linked_todo_id, pinned, created_at: now, updated_at: now, deleted_at: "",
+    }
+    mockNotes.push(note)
+    return { ok: true, id: mockNoteSeq }
+  },
+  update_note: async (note_id: number, fields: Partial<Note>) => {
+    const n = mockNotes.find((x) => x.id === note_id)
+    if (n) {
+      Object.assign(n, fields, { updated_at: new Date().toISOString() })
+      if (fields.pinned !== undefined) n.pinned = !!fields.pinned
+    }
+    return { ok: !!n }
+  },
+  delete_note: async (note_id: number) => {
+    const n = mockNotes.find((x) => x.id === note_id && !x.deleted_at)
+    if (n) n.deleted_at = new Date().toISOString()
+    return { ok: !!n }
+  },
+  // 项目 mock
+  get_projects: async () => mockProjects.filter((p) => !p.archived),
+  add_project: async (name: string, color = "#007AFF", icon = "📁", description = "") => {
+    mockProjectSeq++
+    const now = new Date().toISOString()
+    const p: Project = { id: mockProjectSeq, name, color, icon, description, created_at: now, updated_at: now, archived: false }
+    mockProjects.push(p)
+    return { ok: true, id: mockProjectSeq }
+  },
+  update_project: async (project_id: number, fields: Partial<Project>) => {
+    const p = mockProjects.find((x) => x.id === project_id)
+    if (p) Object.assign(p, fields, { updated_at: new Date().toISOString() })
+    return { ok: !!p }
+  },
+  delete_project: async (project_id: number) => {
+    const p = mockProjects.find((x) => x.id === project_id)
+    if (p) p.archived = true
+    return { ok: !!p }
+  },
+  // 驾驶舱 mock
+  get_dashboard_summary: async () => ({
+    today_seconds: 8700,
+    today_segments: 5542,
+    todo_total: 8,
+    todo_pending: 4,
+    todo_overdue: 1,
+    todo_done: 3,
+    note_count: mockNotes.filter((n) => !n.deleted_at).length,
+    note_pinned: mockNotes.filter((n) => !n.deleted_at && n.pinned).length,
+    recent_reports: [
+      { type: "daily", date: "2026-09-06" },
+      { type: "daily", date: "2026-09-05" },
+      { type: "weekly", date: "2026-09-01" },
+    ],
+    available_dates: ["2026-09-06", "2026-09-05", "2026-09-04", "2026-09-03"],
+  }),
+  // 全局搜索 mock
+  global_search: async (keyword: string, _limit = 20) => {
+    const kw = keyword.toLowerCase()
+    return {
+      text_segments: [
+        { id: 1, session_id: 1, timestamp: "2026-09-06T14:30:00", text: `包含「${keyword}」的输入片段`, source: "keyboard", is_filtered: false, char_count: 20 },
+      ].filter((s) => s.text.toLowerCase().includes(kw)),
+      notes: mockNotes.filter((n) => !n.deleted_at && n.content.toLowerCase().includes(kw)),
+      todos: mockTodos.filter((t) => !t.deleted_at && t.title.toLowerCase().includes(kw)).map((t) => ({
+        id: t.id, title: t.title, status: t.status, priority: t.priority,
+        due_date: t.due_date, source_type: t.source_type, source_ref: t.source_ref,
+      })),
+      reports: [
+        { type: "daily", date: "2026-09-06", excerpt: `…包含「${keyword}」的日报片段…` },
+      ].filter((r) => r.excerpt.toLowerCase().includes(kw)),
+    }
+  },
+  // 周度洞察 mock
+  get_weekly_insights: async () => ({
+    ok: true,
+    cached: true,
+    week_label: "2026-W37",
+    week_start: "2026-09-07",
+    week_end: "2026-09-13",
+    source: "llm" as const,
+    generated_at: new Date().toISOString(),
+    insights: [
+      { type: "best_time" as const, title: "最佳工作时段", body: "上午 10-12 点和下午 14-16 点效率最高，建议安排核心开发任务。" },
+      { type: "warning" as const, title: "注意休息", body: "已连续工作 7 天，建议适当休息调整。" },
+      { type: "wow" as const, title: "周环比", body: "本周日均工作时长 5h12m，较上周增长 18%，专注度提升。" },
+      { type: "goal" as const, title: "目标达成", body: "本周目标 6h/天，实际达成 5 天。" },
+    ],
+    stats: {
+      week_daily_avg_seconds: 18720,
+      last_week_daily_avg_seconds: 15840,
+      entertainment_ratio: 0.12,
+      streak_days: 7,
+      goal_hit_days: 5,
+      week_days: 7,
+    },
+  }),
+  generate_weekly_insights: async () => ({ task_id: "insights-mock" }),
 }

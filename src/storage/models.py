@@ -103,6 +103,7 @@ class TodoRecord:
     completed_at: str = ""          # 完成时间 ISO8601（仅 status=done 时有值）
     sort_order: float = 0.0         # 同列内手动排序（REAL 便于两值中间插值，避免整体重排）
     progress: int = 0               # 完成进度 0-100（P2）；满 100 自动联动 status=done，可回退
+    deleted_at: str = ""            # 软删除时间 ISO8601（空 = 未删除；v4.4 归档）
 
 
 @dataclass
@@ -118,3 +119,30 @@ class TodoAdvice:
     source_date: str = ""                     # 基于哪天的活动生成（日报日期）
     created_at: str = ""
     updated_at: str = ""
+
+
+@dataclass
+class NoteRecord:
+    """速记记录（单行速记 + 上下文关联）"""
+    id: Optional[int] = None
+    content: str = ""               # 速记内容
+    source: str = "manual"          # manual | hotkey | report
+    source_ref: str = ""            # 来源标识（如报告日期）
+    linked_todo_id: Optional[int] = None  # 关联的待办 id（可空）
+    pinned: bool = False            # 置顶
+    created_at: str = ""            # ISO8601
+    updated_at: str = ""            # ISO8601
+    deleted_at: str = ""            # 软删除时间 ISO8601（空 = 未删除）
+
+
+@dataclass
+class ProjectRecord:
+    """项目记录（用于待办/速记分类关联）"""
+    id: Optional[int] = None
+    name: str = ""                  # 项目名称
+    color: str = "#007AFF"          # 项目颜色标识
+    icon: str = "📁"                # 项目图标
+    description: str = ""           # 项目描述
+    created_at: str = ""            # ISO8601
+    updated_at: str = ""            # ISO8601
+    archived: bool = False          # 是否归档

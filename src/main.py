@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import signal
 import sys
 import time
@@ -135,6 +136,46 @@ class BlackboxEngine:
         self._timedist_extractor = None
         self._init_ai_layer()
 
+        # 采集增强路由：UIA 焦点直读 + WPS/Office COM + 键盘兜底
+        # 实测结论（2026-09-11）：单一手段覆盖不了所有应用，故用路由择优
+        #   记事本/Chromium → UIA 可读 | WPS 表格 → COM 可读 | 自绘 → 拼音兜底
+        #
+        # 注意（2026-09-14 实测）：UIA 必须走**独立子进程**。
+        # 主进程一旦 import comtypes/uiautomation，pywebview 的 WebView2 窗口
+        # 就会彻底失效（进程起不来、页面永不加载 → 白屏），故选 UiaWorkerCapture。
+        self._uia_capture = None
+        self._accurate_mode = bool(self._settings.collection.get("accurate_mode", True))
+        if self._accurate_mode and self._settings.collection.get("uia_capture_enabled", True):
+            try:
+                from src.collector.capture_router import CaptureRouter
+                from src.collector.uia_worker_capture import UiaWorkerCapture
+
+                interval = self._settings.collection.get(
+                    "uia_capture_interval_ms", 500) / 1000.0
+                uia = UiaWorkerCapture(
+                    interval=interval,
+                    should_capture=self._uia_should_capture,
+                )
+
+                com = None
+                if self._settings.collection.get("com_capture_enabled", True):
+                    try:
+                        from src.collector.wps_com import WpsComCapture
+                        com = WpsComCapture(
+                            interval=interval,
+                            should_capture=self._uia_should_capture,
+                            on_committed=self._on_wps_cell_committed,
+                        )
+                    except Exception:
+                        logger.info("WPS/Office COM 采集不可用（已跳过）")
+
+                self._uia_capture = CaptureRouter(
+                    uia=uia, com=com, accurate_mode=True)
+                logger.info("采集增强路由已就绪：UIA=子进程模式, COM=%s",
+                            bool(com and com.is_available))
+            except Exception:
+                logger.warning("采集增强初始化失败（可选功能，已跳过）", exc_info=True)
+
         # REST API 服务器
         self._rest_api = None
         self._init_rest_api()
@@ -196,6 +237,7 @@ class BlackboxEngine:
                 self._keyboard_hook = KeyboardHook(
                     on_event=self._on_keyboard_event,
                     capture_hotkeys=self._settings.collection["capture_hotkeys"],
+                    on_ime_text=self._on_ime_text_captured,
                 )
                 self._keyboard_hook.start()
             elif not self._keyboard_hook.is_alive:
@@ -203,9 +245,14 @@ class BlackboxEngine:
                 self._keyboard_hook = KeyboardHook(
                     on_event=self._on_keyboard_event,
                     capture_hotkeys=self._settings.collection["capture_hotkeys"],
+                    on_ime_text=self._on_ime_text_captured,
                 )
                 self._keyboard_hook.start()
             self._keyboard_paused = False
+
+        # 启动 UIA 焦点文本采集
+        if self._uia_capture:
+            self._uia_capture.start()
 
         # 启动剪贴板监控
         if self._settings.collection["clipboard_enabled"]:
@@ -239,6 +286,8 @@ class BlackboxEngine:
 
         # 按逆序停止各组件（键盘钩子不停止，只设暂停标志）
         self._keyboard_paused = True
+        if self._uia_capture:
+            self._uia_capture.stop()
         if self._idle_detector:
             self._idle_detector.stop()
         if self._clipboard_monitor:
@@ -741,6 +790,55 @@ class BlackboxEngine:
         if self._privacy_filter.should_pause_recording(to_ctx.process_name, to_ctx.window_title):
             logger.info("黑名单应用，暂停键盘记录: %s", to_ctx.process_name)
 
+    def _uia_should_capture(self) -> bool:
+        """UIA 采集前置检查：隐私模式/黑名单应用时不读取焦点控件"""
+        if self._privacy_filter.is_privacy_mode:
+            return False
+        if self._window_tracker:
+            ctx = self._window_tracker.current_context
+            if self._privacy_filter.should_pause_recording(ctx.process_name, ctx.window_title):
+                return False
+        return True
+
+    def _on_ime_text_captured(self, text: str):
+        """IME 上屏文本捕获回调 → 触发 UIA 立即快照（输入框内已是转换后汉字）"""
+        if self._uia_capture:
+            self._uia_capture.request_snapshot()
+
+    def _on_wps_cell_committed(self, cell_text: str):
+        """WPS 表格单元格"提交"回调 → 用汉字回填刚才入库的拼音片段
+
+        背景（实测结论，2026-09-11）：
+        - WPS 表格在**编辑模式**下 `ActiveCell.Value2` 返回 None，COM 读不到未提交内容
+        - 而键盘钩子只能记录拼音，且在你打字过程中就提交入库了
+        - 等用户离开单元格（内容真正写入单元格），COM 才能读到汉字
+
+        所以在这里把最近那条拼音片段就地替换成汉字，
+        避免展示层再去"猜"同音字（点/电、动/懂 这类错误）。
+        """
+        try:
+            if not cell_text or not cell_text.strip():
+                return
+            if self._db is None:
+                return
+            seg = self._db.find_recent_segment(within_seconds=180.0, source="keyboard")
+            if not seg:
+                return
+            raw = (seg.get("raw_text") or "").strip()
+            if not raw:
+                return
+            # 已经是汉字 → 无需回填
+            if re.search(r"[\u4e00-\u9fff]", raw):
+                return
+            # 只回填"看起来像拼音流"的片段（拉丁字母 / 数字 / 常见标点）
+            if not re.fullmatch(r"[A-Za-z0-9\s,./;:'\"!?\-_+=()\[\]]+", raw):
+                return
+            if self._db.update_segment_text(seg["id"], cell_text):
+                logger.info("WPS 提交回填: #%s %r → %r",
+                            seg["id"], raw[:40], cell_text[:40])
+        except Exception:
+            logger.debug("WPS 提交回填失败", exc_info=True)
+
     def _on_keyboard_event(self, event: KeyEvent):
         """键盘事件"""
         # 暂停标志检查
@@ -776,6 +874,13 @@ class BlackboxEngine:
         if not getattr(self, '_text_commit_logged', False):
             self._text_commit_logged = True
             logger.info("引擎首次收到文本提交: text=%r", text[:50])
+
+        # UIA 增强：用焦点控件真实文本（输入法上屏内容）替换键盘推算文本
+        if self._uia_capture:
+            enhanced = self._uia_capture.get_typed_text(text)
+            if enhanced and enhanced != text:
+                logger.info("UIA 增强替换提交文本: %r → %r", text[:40], enhanced[:40])
+                text = enhanced
 
         # 隐私过滤
         context = ""
@@ -1064,6 +1169,14 @@ def main():
 
 
 if __name__ == "__main__":
+    # UIA 采集工作子进程：必须在任何 GUI/引擎初始化之前处理，
+    # 且这是**唯一**允许导入 uiautomation/comtypes 的入口
+    # （主进程导入会破坏 pywebview 的 WebView2 窗口 → 白屏）
+    if "--uia-worker" in sys.argv:
+        from src.collector.uia_worker import main as _uia_worker_main
+
+        sys.exit(_uia_worker_main())
+
     # PyInstaller windowed(console=False)模式下 stdout/stderr 为 None，
     # 会导致依赖 print/stderr 的库（pywebview/pythonnet）运行时崩溃，
     # 重定向到 devnull 规避（仅 windowed exe 受影响，源码版有控制台不受影响）

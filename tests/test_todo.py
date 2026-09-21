@@ -117,12 +117,94 @@ class TestTodoCRUD:
         """更新不存在的 ID 返回 False"""
         assert db.update_todo(99999, {"title": "x"}) is False
 
-    def test_delete_todo(self, db):
-        """删除后查不到，二次删返回 False"""
+    def test_delete_todo_soft(self, db):
+        """软删除：记录仍在库、列表查询不见、归档查询可见；二次删返回 False"""
         tid = db.insert_todo(_make_todo("待删"))
-        assert db.delete_todo(tid) is True
-        assert db.query_todo(tid) is None
+        assert db.delete_todo(tid, deleted_at="2026-08-14T10:00:00") is True
+        assert db.query_todo(tid) is not None  # 记录还在（软删除，仅打标记）
+        assert len(db.query_todos(include_drafts=True)) == 0
+        items, total = db.query_archived_todos()
+        assert total == 1
+        assert items[0].id == tid
+        assert items[0].deleted_at == "2026-08-14T10:00:00"
+        assert db.delete_todo(tid, deleted_at="2026-08-14T10:01:00") is False
+
+    def test_delete_todo_requires_timestamp(self, db):
+        """不传 deleted_at 直接返回 False（防误调用产生无时间戳归档）"""
+        tid = db.insert_todo(_make_todo("待办"))
         assert db.delete_todo(tid) is False
+        assert len(db.query_todos(include_drafts=True)) == 1  # 未被删除
+
+
+# ==================== 删除归档：软删除 / 恢复 / 彻底删除（v4.4） ====================
+
+class TestTodoArchive:
+    """归档查询 / 恢复 / 彻底删除"""
+
+    def test_archived_keyword_filter(self, db):
+        """关键词匹配标题或备注"""
+        db.insert_todo(_make_todo("写周报"))
+        tid2 = db.insert_todo(_make_todo("回复客户", note="关于合同"))
+        db.delete_todo(tid2, deleted_at="2026-08-14T10:00:00")
+
+        _, total_all = db.query_archived_todos()
+        assert total_all == 1
+        _, total_hit = db.query_archived_todos(keyword="合同")
+        assert total_hit == 1  # 命中备注
+        _, total_miss = db.query_archived_todos(keyword="不存在的词")
+        assert total_miss == 0
+
+    def test_archived_pagination(self, db):
+        """limit/offset 分页 + 按删除时间降序"""
+        for i in range(5):
+            tid = db.insert_todo(_make_todo(f"任务{i}"))
+            db.delete_todo(tid, deleted_at=f"2026-08-14T10:0{i}:00")
+
+        page1, total = db.query_archived_todos(limit=3, offset=0)
+        assert total == 5
+        assert len(page1) == 3
+        assert page1[0].title == "任务4"  # 最近删除在前
+        page2, _ = db.query_archived_todos(limit=3, offset=3)
+        assert [t.title for t in page2] == ["任务1", "任务0"]
+
+    def test_restore_keeps_sort_order(self, db):
+        """恢复后回到列表，sort_order 保留（原看板位置不变）"""
+        tid = db.insert_todo(_make_todo("排序任务", sort_order=3.5))
+        db.delete_todo(tid, deleted_at="2026-08-14T10:00:00")
+        assert db.restore_todo(tid) is True
+
+        rows = db.query_todos(include_drafts=True)
+        assert len(rows) == 1
+        assert rows[0].sort_order == 3.5
+        assert rows[0].deleted_at == ""
+        # 未删除的待办不能"恢复"
+        assert db.restore_todo(tid) is False
+
+    def test_purge_removes_permanently(self, db):
+        """彻底删除后库中无记录，归档查询也查不到"""
+        tid = db.insert_todo(_make_todo("彻底删"))
+        db.delete_todo(tid, deleted_at="2026-08-14T10:00:00")
+        assert db.purge_todo(tid) is True
+        assert db.query_todo(tid) is None
+        _, total = db.query_archived_todos()
+        assert total == 0
+        assert db.purge_todo(tid) is False
+
+    def test_purge_rejects_active_todo(self, db):
+        """未删除（活跃）待办不能直接 purge，必须先软删除"""
+        tid = db.insert_todo(_make_todo("活跃待办"))
+        assert db.purge_todo(tid) is False
+        assert db.query_todo(tid) is not None  # 未被误删
+
+    def test_stats_excludes_archived(self, db):
+        """统计口径排除软删除的待办"""
+        db.insert_todo(_make_todo("留下的"))
+        tid = db.insert_todo(_make_todo("删掉的", status="done"))
+        db.delete_todo(tid, deleted_at="2026-08-14T10:00:00")
+
+        stats = db.get_todo_stats("2026-08-14")
+        assert stats["total"] == 1
+        assert stats["done"] == 0  # 已删的 done 不计入
 
 
 # ==================== 看板：排序与统计（v4.3） ====================
@@ -545,10 +627,12 @@ class TestTodoAdvicesCRUD:
         assert db.insert_todo_advice(_make_advice(todo_id=t)) > 0
 
     def test_query_left_join_deleted_todo(self, db):
-        """关联 todo 已删除 → 标题回退（待办已删除）"""
+        """软删除后标题保留（归档可查）；彻底删除后标题回退（待办已删除）"""
         t = db.insert_todo(_make_todo("A"))
         db.insert_todo_advice(_make_advice(todo_id=t))
-        db.delete_todo(t)
+        db.delete_todo(t, deleted_at="2026-08-14T10:00:00")
+        assert db.query_todo_advices()[0]["todo_title"] == "A"  # 软删除标题仍在
+        db.purge_todo(t)
         rows = db.query_todo_advices()
         assert rows[0]["todo_title"] == "（待办已删除）"
 

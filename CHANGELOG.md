@@ -1,5 +1,178 @@
 # Changelog
 
+## v5.3.0 - 2026-09-15 — 输入采集准确性：键盘钩子修复（C 系列）+ UIA/COM 真实上屏文本（B 系列）
+
+> 目标：让记录的文本**就是真实上屏内容**，而不是键盘逆推的拼音近似。
+> C 系列修键盘钩子本身的丢键/漏检；B 系列在提交入库前用 UIA/COM 读到的真实文本替换键盘文本。
+
+### 修复（C 系列：键盘钩子）
+- **C1 数字键选字触发 IME 上屏检查**：`_IME_CONFIRM_VKS` 扩展覆盖数字键（主键盘 0x30-0x39 + 小键盘 0x60-0x69）——拼音候选数字选择同样会触发上屏，此前漏检；确认键按下后延时 35ms 轮询 `ImmGetCompositionStringW` 取上屏结果，`_handle_ime_confirm` 区分"数字被 IME 消费（选字）"与普通数字字符
+- **C2 钩子回调减负防丢键**：`_kbd_hook_callback` 只做最小解析并 `put_nowait` 入队（队列满丢弃），`_dispatch_loop` 独立线程消费——回调内不再记日志/抛异常/执行耗时操作，避免高并发输入时回调超时丢键
+- **C3 残缺拼音不硬转（置信度检测）**：`pinyin_converter.py` 新增置信度门控——2 音节序列 `avg_log ≥ -0.9`、≥3 音节序列 `≥ -1.0` 才采用 DAG 结果，低置信度弱信号转 HMM 仲裁，仍低则回退保留原文；修复 `gongsi`→`工四`、`xiangm`→`现gm` 类残缺拼音硬转错误
+- **C4 AI 增强结果视觉区分**：前端会话详情与搜索结果中，AI 增强结果以 Sparkles 图标 + 主题色高亮展示，与普通拼音转换结果、原文肉眼可辨
+
+### 新增（B 系列：UIA/COM 真实上屏文本）
+- **B1 UIA 快照采集（独立子进程）**：`uia_worker.py` 子进程 + `uia_worker_capture.py` 主进程代理——UIA 读取整体隔离到子进程（**实测结论：主进程导入 comtypes 会毁掉 pywebview 的 WebView2 窗口**）；ValuePattern → TextPattern → MSAA 三路读取焦点控件；控件首次出现记基线、提交时差分出新增部分；快照过期 2.5s 自动回退键盘文本；密码控件跳过、连续失败退避；子进程崩溃自动重启（5s 退避）
+- **B2 后端集成**：`main.py` 在 `_on_text_commit` 阶段用 `CaptureRouter` 三路仲裁结果替换提交文本（COM 优先 → UIA → 键盘兜底），替换前经 `_uia_should_capture` 隐私门控（隐私模式/黑名单直接跳过）；IME 上屏时 `request_snapshot()` 立即唤醒快照
+- **B3 前端展示真实上屏文本**：UIA/COM 增强替换后的文本即入库文本，活动页直接展示；配置项 `accurate_mode`（总开关）/`uia_capture_enabled`/`com_capture_enabled`/`uia_capture_interval_ms` 可一键回退纯键盘链路
+- **WPS/Office COM 采集**（`wps_com.py`）：WPS 表格/文字、MS Excel/Word 通过 COM 自动化读取 `ActiveCell.Value2` / `Selection.Text`——**WPS 表格的单元格文本不通过 UIA 暴露**，必须走 COM；只读绑定运行中实例（GetActiveObject）、绝不启动新进程；按进程列出多候选 COM 类 + duck typing 判断表格/文档
+
+### 打包
+- `blackbox.spec`：hiddenimports 增加 `uiautomation`、`comtypes`（含 client/stream）、`src.collector.uia_worker`、`uia_worker_capture`、`wps_com`、`capture_router`；子进程命令行打包版复用自身 exe（`WorkTrace.exe --uia-worker`），`_ensure_stdout` 处理 GUI 子系统 stdout=None
+- `requirements.txt`：新增 `uiautomation>=2.0.18`、`comtypes>=1.2.0`（均为可选依赖，缺失时自动跳过增强）
+
+### 验证
+- 后端：全量单元测试 504 通过（含新增 `test_uia_worker.py`、更新后的 `test_keyboard_hook.py` IME 去重用例、`test_uia_capture.py` 差分/仲裁用例）
+- 前端：vite 生产构建零错误，产物含 AI 增强视觉区分代码与 5.3.0 版本号
+- GUI 完整验证需手动启动（TRAE 沙箱限制数据库写入）：双击 `启动.bat` → 在记事本/浏览器输入中文 → 检查记录为上屏文本；WPS 表格输入 → 检查单元格文本被 COM 捕获
+- 打包验证需在非 TRAE 终端执行：`pyinstaller blackbox.spec --noconfirm`
+
+## v5.2.0 - 2026-09-09 — 拼音智能识别 2.0：离线转换引擎 + AI 增强
+
+### 新增功能
+- **拼音转汉字离线引擎升级**（活动页「智能识别」）：
+  - 引入开源 [Pinyin2Hanzi](https://github.com/letiantian/Pinyin2Hanzi)（MIT，纯 Python，数据来自搜狗互联网词库），内置到 `src/libs/Pinyin2Hanzi/`
+  - **分层转换**：DAG（词库+动态规划，词组级）→ HMM（维特比，字级上下文）→ 原单字频率映射（兜底），任意一层失败自动降级，永不丢失原文
+  - **部分转换策略**（v5.2.0 内迭代）：字母段按"连续合法音节块"分组转换（块≥2 音节），简拼声母、英文字母等无法识别的部分**保留原字母**——能识别的转汉字，识别不了的保留原文，不再整段乱转或整段跳过；实测 `nihao,jintyaowancgr1003xiangmdewaiguanjianmopinggu` → `你好,jintyaowancgr1003xiangm的外观建模评估`（旧版输出乱码 `现gm的外关建摸平古`）
+  - 修复贪心分词 4 字母上限 bug（`xiang`/`zhuang` 等 5-6 字母音节被拆碎），改为最长 6 字母匹配
+  - 数据文件 gzip 压缩（37MB → 5.8MB），懒加载单例（首次约 0.5s，进程内共享），不影响应用启动
+  - 转换质量实测：`wojintianhenkaixin` → `我今天很开心`（旧版 `我进天很开新`）、`baocunwenjian` → `保存文件`（旧版 `报村问建`）、`xiugaibaogao` → `修改报告`（旧版 `修改报高`）；英文/数字/代号保护回归通过
+- **AI 增强识别**（B+C 双引擎）：
+  - 「智能识别」开启后新增「AI 增强」按钮：当前可见片段**批量一次 LLM 调用**（非逐条），结果覆盖离线引擎输出
+  - Prompt 针对**简拼/混拼**优化（用户打字快，音节只敲开头几个字母）：明示 `jint→今天`、`wanc→完成`、`xiangm→项目` 等规则 + 代号规范化（`gr1003→GR1003`）+ 无法还原的保留原字母；实测真实数据 100% 还原：`nihao,jintyaowancgr1003xiangmdewaiguanjianmopinggu` → `你好，今天要完成GR1003项目的外观建模评估`、`hiayougr1002debeijiapinggu` → `还有GR1002的背夹评估`
+  - 复用现有 LLM 多提供商降级（Ollama/GLM/DeepSeek/OpenAI/自定义），未配置 API Key 时按钮报错提示、离线结果保留
+  - 异步任务式（task_id + 轮询），容错解析 LLM JSON 输出（代码块剥离 / 长度校验 / 失败降级）
+- 原则不变：转换仅在展示层，**数据库原始数据永不修改**，关闭「智能识别」即看原文
+
+### 后端
+- 新建：`src/libs/Pinyin2Hanzi/`（vendored，仅 `implement.py` 改为 gzip 加载）、`src/ai/pinyin_ai.py`（LLM 批量转换 + 容错解析，复用 LLMClient 重试降级）
+- 重写：`pinyin_converter.py`（分层引擎 + 懒加载单例 + 音节规范化 lue→lve + HMM 超长序列保护）
+- `web_api.py`：新增 `convert_pinyin_ai`（批量异步任务），`convert_pinyin` 内部引擎升级（接口不变），版本号 5.1.0 → 5.2.0
+- `blackbox.spec`：datas 增加 Pinyin2Hanzi gzip 数据；hiddenimports 增加 `src.libs.*` 7 项 + `src.ai.pinyin_ai`（+补 todo_extractor/timedist_extractor）
+
+### 前端
+- `ActivityView.tsx`：「AI 增强」按钮（Sparkles 图标，加载中/已增强/错误三态）+ AI 结果覆盖显示 + 数据源切换自动重置
+- `pywebview.ts`：`convert_pinyin_ai` 接口签名 + mock
+- 版本号统一 5.2.0（web_api / AboutView / pyproject）；构建产物已更新到 `web_frontend/`
+
+### 修复
+- **`启动.bat` 双击闪退（黑窗一闪而过、无报错、无日志）**：根因是 bat 文件为 LF（Unix）换行符，cmd 解析 `if (...)` 括号块时直接中止脚本——所有错误分支（含 pause）从未执行过；已将全部 5 个 bat（`启动` / `重新打包` / `deploy` / `scripts/install_startup` / `scripts/setup_whitelist`）转为 CRLF（UTF-8 无 BOM 编码保持不变），并用同结构测试脚本验证 if 块 + 中文 echo + pause 全部恢复正常
+
+### 验证
+- 后端：vendored 库导入/转换 13 组用例全部通过（首次 517ms 懒加载，后续 0ms）；pinyin_ai 解析 6 组容错用例（代码块/多余文字/长度不匹配/非法 JSON）+ mock LLM 全流程通过
+- 前端：vite 生产构建零错误，产物含 5.2.0 版本与 AI 增强代码
+- GUI 完整验证需手动启动（TRAE 沙箱限制数据库写入）：双击 `启动.bat` → 活动页任意会话展开 → 「智能识别」→「AI 增强」（需已配置 API Key）
+
+## v5.1.0 - 2026-09-08 — 个人工作台 Phase 1：AI 周度洞察 + 全局搜索命令面板
+
+### 新增功能
+- **AI 周度洞察**（报告页新增「洞察」tab）：
+  - LLM 基于本周 vs 上周活动统计（小时分布 / 每日时长 / 分类占比 / 连续天数 / 目标达成）生成 4 类洞察卡片：最佳时段（best_time）/ 需要注意（warning）/ 周环比（wow）/ 目标节奏（goal）
+  - **双模式兜底**：LLM 不可用或调用失败时自动降级为本地统计规则（无 API Key 也可用），徽标区分「AI 生成」/「本地统计」
+  - 异步任务式生成（立即返回 task_id，前端 1.5s 轮询），结果缓存到 `data/insights/`，支持一键重新生成
+  - 日均按**实际有数据的天数**计算（修复周初「环比暴跌」误报），本周不足 3 天自动标注「数据尚不完整」；时段标签细分上午/中午/下午/晚上
+- **全局搜索命令面板（Ctrl+K）**：
+  - 任意界面 `Ctrl+K` 唤起，350ms 防抖跨模块搜索：**报告（日报/周报/月报正文）+ 待办 + 速记 + 输入记录**四类
+  - 结果按类型分组着色，点击直达：报告 → 打开对应日期报告；待办 → 跳转看板；速记 → 跳转速记页并携带关键词过滤；输入记录 → 跳转活动明细全文检索
+
+### 后端
+- `database.py`：新增 `query_hourly_stats_range` / `query_daily_totals_range` / `query_category_stats_range` 三个周度聚合查询；`global_search` 扩展报告搜索（daily_reports + period_reports）
+- `report_generator.py`：新增 `generate_weekly_insights`（LLM 优先 + `_local_weekly_insights` 本地兜底 + `data/insights/` 缓存读写）
+- `prompt_engine.py`：新增 `build_weekly_insight_prompt`（v5.1 结构化 Prompt，强约束数字与统计一致、合法 JSON 输出）
+- `web_api.py`：新增 `get_weekly_insights` / `generate_weekly_insights`（异步任务 + `get_task_status` 轮询），版本号 5.0.0 → 5.1.0
+
+### 前端
+- 新建：`InsightsView.tsx`（洞察卡片网格 + 生成中/错误/空态 + 轮询超时保护）、`GlobalSearchModal.tsx`（Ctrl+K 命令面板）
+- 修改：`pywebview.ts`（InsightItem / InsightsData 类型 + 2 新接口签名 + mock）、`App.tsx`（Ctrl+K 全局监听 + 报告页四 tab 切换 + 搜索结果导航回调）、`QuickNoteView.tsx`（支持 `initialKeyword` 外部带入关键词）、`utils.tsx`（REPORT_TABS 增加「洞察」）
+- 修复：`vite.config.ts` `__dirname` → `import.meta.url`（兼容 `--configLoader runner`，支持受限环境构建）；App.tsx 报告视图孤儿 `</>` 标签（导致构建失败）
+- 版本号统一 5.1.0（web_api / AboutView / pyproject）；构建产物已更新到 `web_frontend/`
+
+### 验证
+- 后端：真实数据副本（8.1MB，13265 会话）验证周度聚合 SQL（小时/每日/分类）+ 报告搜索 + 本地洞察规则 + Prompt 构建，全部通过
+- 前端：vite 生产构建 2704 模块零错误；web_frontend 产物与 index.html 引用一致
+- GUI 完整验证需手动启动（TRAE 沙箱限制数据库写入）：双击 `启动.bat` → 报告页「洞察」tab / 任意页 `Ctrl+K`
+
+## v5.0.1 - 2026-09-08 — exe 重打包发布（修复启动报错）
+
+### 修复
+- **启动报错 `unable to open database file` / `disk I/O error`**：根因是旧版 exe 内嵌的过时初始化代码，无法兼容当前数据目录；本次用最新源码重新打包，`Database.initialize()` 的健壮逻辑（目录自动创建 + WAL→DELETE 降级重试 + 损坏库备份兜底）已随新 exe 生效
+- 源码版与 exe 版共用同一套 `config/`、`data/`（`get_app_root()` 开发者场景检测），历史数据（8.1MB 主库）零丢失
+
+### 部署与验证
+- 重新打包 `dist\WorkTrace.exe`（29.0 MB，PyInstaller + blackbox.spec）
+- 旧 exe 归档至 `dist\旧版本备份_20260908\WorkTrace_旧版.exe`（可回滚）
+- 实测验证：新 exe 启动 → 数据库初始化成功（`notes`/`projects` 新表就位）→ 键盘/窗口/剪贴板/闲置采集全部运行 → 采集自动启动
+- 新增 [重新打包.bat]：一键清理 build/ 并重新打包（依赖：Python + pyinstaller）
+
+## v5.0.0 - 2026-09-07 — 个人工作台 Phase 1：驾驶舱 + 速记
+
+### 新增功能
+- **驾驶舱（Dashboard）**：信息聚合首页，4 张指标卡片（今日采集时长/待办/逾期/速记），6 个快捷入口，最近报告列表，今日工作进度条；30 秒自动刷新
+- **速记（QuickNote）**：单行速记输入（Enter 保存/Shift+Enter 换行），置顶/取消置顶，搜索过滤，仅看置顶筛选，来源标签（快捷键/报告/手动），关联待办标记
+- **导航分组**：左导航改为 3 组结构——工作台（驾驶舱、速记）/ 记录与报告（报告、统计、活动、待办）/ 系统（设置、关于）；默认视图从「报告」改为「驾驶舱」
+- **全局搜索**：跨文本片段、速记、待办三表搜索
+
+### 数据库扩展
+- 新增 `notes` 表：速记（content, source, pinned, linked_todo_id, 软删除）
+- 新增 `projects` 表：项目（name, color, icon, archived 软归档）
+- `todos` 表新增 `project_id` 列（迁移自动添加，旧库无缝升级）
+- 新增 5 个索引（notes.created_at / notes.pinned / notes.deleted_at / notes.linked_todo_id / projects.archived）
+
+### 后端 API（web_api.py）
+- 速记 CRUD：`get_notes` / `add_note` / `update_note` / `delete_note`
+- 项目 CRUD：`get_projects` / `add_project` / `update_project` / `delete_project`
+- 驾驶舱聚合：`get_dashboard_summary`（一次调用聚合采集/待办/速记/报告数据）
+- 全局搜索：`global_search`（跨三表搜索）
+- 版本号 4.4.0 → 5.0.0
+
+### 前端
+- 新建：`DashboardView.tsx`、`QuickNoteView.tsx`
+- 修改：`pywebview.ts`（4 新接口 + 11 方法签名 + mock）、`utils.tsx`（ViewKey + navGroups 分组）、`Sidebar.tsx`（分组导航栏）、`App.tsx`（路由 + 默认视图）
+- 构建产物已输出到 `web_frontend/`
+
+## v4.4.0 - 2026-08-14 — 待办删除归档
+
+### 删除不再丢数据（软删除 + 双归档）
+- **软删除**：`todos` 新增 `deleted_at` 列（`_migrate_schema` 自动迁移，旧库无缝升级）；应用内删除 = 打时间戳隐藏，记录仍在库中
+- **文件归档双保险**：删除时同步追加 `data/exports/todo_archive_YYYY-MM.md`（按月 Markdown 表，人读）+ `todo_archive.jsonl`（全字段机读）；文件 append-only，恢复/彻底删除都不回改，任何时点可找回
+- **归档视图**（待办 → 视图 → 归档）：列表形式浏览已删待办（状态/来源/进度/删除时间），关键词搜索标题/备注（防抖 300ms），分页加载
+- **一键恢复**：清空 `deleted_at` 回看板，`sort_order` 保留 → 回到原看板位置；恢复后同步刷新看板统计
+- **彻底删除**：两步确认（点垃圾桶 → 「确认删除」），真 DELETE；归档文件中的历史记录仍保留
+- **口径同步**：看板列表 / 统计 / CSV/JSON 导出 / AI 提取去重全部排除已删除待办；删除交互不变（仍是一步删除，无需确认）
+
+### 接口与文件
+- 后端：`src/storage/database.py`（delete_todo 软删除 + query_archived_todos/restore_todo/purge_todo）、`src/ui/web_api.py`（delete_todo 重写 + get_archived_todos/restore_todo/purge_todo）、`src/storage/data_exporter.py`（append_todo_archive）
+- 前端：`src/lib/pywebview.ts`（Todo.deleted_at + 3 接口 + mock）、`src/app/components/TodoView.tsx`（归档分段档 + ArchivePanel）
+- 测试：test_todo.py 软删除/归档/恢复/彻底删除/统计口径 + test_export.py 归档文件 4 组；基线 364 passed
+- 版本号统一 4.4.0（web_api / AboutView / pyproject）
+
+## v4.3.2 - 2026-08-14 — UI 换肤
+
+### 视觉方案落地（依据 `职迹UI优化效果图` 设计稿）
+- **设计 token 全量更新**（`theme.css`）：品牌色 `#0071e3`→`#2563eb`、背景 `#f3f4f6`、文本 `#111827` 系、边框 `#e5e7eb`、语义色 `#22c55e/#f59e0b/#ef4444`；Inter 字体栈；html 基准字号 13→14px。`--wt-*` 是唯一样式真源，各视图自动跟随
+- **日报页**：工具条实色白底（日/周/月分段器方形化、HTML/PDF 描边按钮、生成报告改 Plus 图标）；右侧栏 300→320px、毛玻璃卡改实色白卡 + shadow-sm；日历标记色统一走 `--wt-accent`
+- **设置页**：实色白卡、provider chip 方形描边（「智谱GLM」→「智谱 GLM」）、输入框 focus 双环、内容限宽 720px
+- **字体大小默认档 小→中**（zoom 系数不变 1/1.14/1.29，设置页三档切换逻辑不变）
+- **导航**：删除「待办」的「新」徽标；左导航保留原浅色毛玻璃配色（宽 200→240px，用户确认不改暗色）
+- 注：统计/活动/待办/关于视图仅经 token 换色，毛玻璃卡未实色化（已知项，待后续统一）
+
+### 修改文件
+- 前端：`styles/theme.css`、`app/lib/{fontSize.ts,utils.tsx}`、`app/components/{Sidebar,SettingsView}.tsx`、`app/App.tsx`
+- 文档：README / CHANGELOG / PRD / HANDOVER
+- 版本号统一 4.3.2（web_api / AboutView / pyproject）；测试基线 353 passed
+
+## v4.3.1 - 2026-08-13 — 安全加固
+
+### 安全与隐私
+- **密钥隔离**：API Key 改由环境变量 / `config/.secrets.yaml`（已 gitignore）提供，`config.yaml` 仅占位符；`save_api_config` 重写（model/base_url→config.yaml，api_key→.secrets.yaml，含旧 key 抢救）
+- **隐私过滤增强**：`sk-` 正则升级（支持 sk-proj-/下划线/连字符）；剪贴板密码关键词检测生效（filter_clipboard 加 context）
+- **应用黑名单扩充至 17 个**（银行/钱包/密码管理器类）
+- **DB 安全审计**：10 表扫描 0 命中明文，无需清理
+- **运行时健壮性**：键盘钩子看门狗（线程崩溃自恢复）+ session 写入 3 次重试
+- **测试连接修复**：`test_api_config` 改 max_tokens=1 轻量请求（原复用 complete() 触发前端超时误判）
+- **死代码清理**：移除 `personal_recorder` 死模块（38 文件约 2857 行）
+- 待办看板列内叠加优先级排序；版本号前后端统一 4.3.1；353 passed；已发布 GitHub Release v4.3.1
+
 ## v4.3.0 - 2026-08-11 — 待办看板增强 + 双库根治
 
 ### 双库问题根治（架构修复）

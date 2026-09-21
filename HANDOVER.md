@@ -3,67 +3,64 @@
 > 新会话第一步：读本文件。当前快照，每次收尾覆盖更新，不堆历史。
 
 ## 1. 项目是什么
-职迹 WorkTrace：纯本地、隐私优先的个人 AI 工作日志工具。三层采集（键盘含中文 IME + 窗口切换 + 剪贴板）→ 隐私过滤 → LLM 日报/周报/月报 + 待办闭环 + 报告可视化 + 导出。工作目录（唯一主线）：`E:\工作\AI CLOUDE\职迹\轻量化键盘记录工具\`（git 仓库；`.git` 在此，父级 `职迹\` 不是 git 仓库，环境检测报「非 git」时勿被误导）。
+职迹 WorkTrace：纯本地、隐私优先的个人 AI 工作日志工具。三层采集（键盘含中文 IME + 窗口切换 + 剪贴板）→ 隐私过滤 → LLM 日报/周报/月报 + 待办闭环 + 报告可视化 + 导出 + 拼音智能识别 + UIA/COM 真实上屏文本采集。工作目录（唯一主线）：`E:\工作\AI CLOUDE\职迹\轻量化键盘记录工具\`（git 仓库；`.git` 在此，父级 `职迹\` 不是 git 仓库，环境检测报「非 git」时勿被误导）。
 
 ## 2. 当前任务
-**v4.3 深度安全风险评估 + 修复（2026-08-13）**：用 grilling 技能做 5 维度风险评估（安全/隐私/死代码/版本规范/运行时健壮性），用户逐条批准修复路线图后执行。**6 项修复 + 测试连接修复全部完成，353 passed，已发布 GitHub Release v4.3.1**（commit `13b7010` + tag `v4.3.1` + `WorkTrace.exe` 31.52MB）。仅剩一项用户侧操作：去智谱控制台轮换 API key。
+**v5.3.0 输入采集准确性已开发完成（2026-09-21），待上传 GitHub**：键盘钩子修复（C 系列）+ UIA/COM 真实上屏文本（B 系列）。本地 `.git` 仓库严重损坏（`objects/pack/*.pack` 缺失 + `refs/` 缺失 + 旧 index cache-tree 指向丢失对象），**v4.4.0 及之后的所有提交对象已永久丢失，v4.3.2~v5.2.0 的独立提交历史无法恢复**（各版本内容已在 CHANGELOG/PRD 完整记录）。上传方法：双击根目录 `git-upload-v5.3.0.bat`（**就地重建方案**——`.git` 目录被编辑器/杀毒句柄占用无法改名，故不 rename：清理 `.git` 内损坏状态文件 index/packed-refs/reflog/无效引用（保留完整对象包与 config）→ 就地 `git init` → fetch → main 对齐远程 `95d20bee` → reset 重建索引（失败自动 `--refetch` 重试一次）→ 暂存 → 预览 → 确认提交推送，一个 `release(v5.3.0)` 提交覆盖 v4.3.2~v5.3.0 全部变更）。bat 必须为 GBK 编码（UTF-8+chcp 65001 会触发 cmd 解析错位）。沙箱内 git 写操作被拦截，必须在非 TRAE 终端执行。
 
 ## 3. 已完成进展
 
-**本会话（2026-08-13）安全加固（已发布 GitHub Release v4.3.1，commit `13b7010`）：**
-- [x] **P1-a 安全堵源头**：
-  - `privacy_filter.py` sk- 正则升级 `sk-[A-Za-z0-9_-]{20,}`（支持 sk-proj-/下划线/连字符）；`filter_clipboard` 加 context 参数，剪贴板密码关键词检测生效
-  - 引入 `config/.secrets.yaml`（已 gitignore）存 api_key；`settings.py` 优先级：环境变量 > .secrets.yaml > config.yaml 占位符
-  - `web_api.save_api_config` 重写：model/base_url → config.yaml；api_key → .secrets.yaml；含旧 key 抢救逻辑
-  - `main._on_clipboard_change` 调用 filter_clipboard 传入 window_title
-- [x] **P1-b 应用黑名单扩充至 17 个**（config.yaml + defaults.py + config.example.yaml 三处同步）
-- [x] **P2-a 排序对齐 PRD**：`TodoView.tsx` 加优先级排序（urgent > high > normal > low）
-- [x] **P2-b 死代码清理**：删除 `personal_recorder/` 死模块（38 文件 ~2857 行）+ pyproject/spec/README 无效引用
-- [x] **P2-c 运行时健壮性**：`keyboard_hook` 看门狗（`_watchdog_loop` 线程崩溃自恢复）+ `main` session 写入 3 次重试；`_tasks` 超时评估后跳过
-- [x] **P0 DB 安全审计**：临时脚本扫描 10 表 **0 命中**——DB 从无明文，无需清理；脚本用完已删
-- [x] **版本号统一 4.3.1**：修正 v4.3 Release（commit `27d689a`）漏 bump 的代码版本号（前后端原都停在 4.2.0）；前后端统一 4.3.1；README 加 v4.3.1 更新日志
-- [x] **测试连接修复**：`test_api_config` 改用 max_tokens=1 轻量请求（原复用 `complete()`，推理模型 glm-4.5-flash 不限 token 单次回复 30s，触发前端超时误判「测试失败」）。**已实测验证**：GUI key 落盘 `.secrets.yaml` 正确，测试连接 2-3s 秒回成功
-- [x] **发布 v4.3.1**：push commit + tag + `gh release create v4.3.1` 上传 `dist/WorkTrace.exe`
+**本会话（2026-09-15）v5.3.0 输入采集准确性（C+B 方案，测试 504 passed）：**
+- [x] C1 数字键选字触发 IME 上屏检查：`_IME_CONFIRM_VKS` 覆盖数字键（主键盘 0x30-0x39 + 小键盘 0x60-0x69），确认键后 35ms 轮询 `ImmGetCompositionStringW` 取上屏结果
+- [x] C2 钩子回调减负防丢键：`_kbd_hook_callback` 仅最小解析 `put_nowait` 入队，`_dispatch_loop` 独立线程消费
+- [x] C3 残缺拼音不硬转：`pinyin_converter.py` 置信度门控（2 音节 ≥-0.9 / ≥3 音节 ≥-1.0），低置信度转 HMM 仲裁，仍低保留原文
+- [x] C4 AI 增强结果前端视觉区分：`ActivityView.tsx` Sparkles 图标 + accent 高亮
+- [x] B1 UIA 快照采集：**独立子进程模式**（`uia_worker.py` + `uia_worker_capture.py` 代理；实测主进程 import comtypes 会毁掉 pywebview WebView2 窗口）；Value→Text→MSAA 三路读取；控件基线差分；快照过期 2.5s 回退键盘文本；密码控件跳过；子进程崩溃自动重启（5s 退避）
+- [x] B2 后端集成：`main.py` `_on_text_commit` 阶段 `CaptureRouter` 三路仲裁（COM 优先 > UIA > 键盘兜底）入库前替换；`--uia-worker` 参数在 GUI/引擎初始化前分流
+- [x] B3 前端展示真实上屏文本；配置项 `accurate_mode` / `uia_capture_enabled` / `com_capture_enabled` / `uia_capture_interval_ms`
+- [x] WPS/Office COM 采集（`wps_com.py`）：GetActiveObject 只读绑定（绝不启动新进程），duck typing 判断表格/文档，覆盖 WPS 表格这类 UIA 读不到的控件
+- [x] 版本号统一 5.3.0（web_api / AboutView / pyproject）；文档同步（CHANGELOG v5.3.0 / README / PRD 版本+历史 v5.0-v5.3 / 使用说明活动明细章节 / .gitignore 补 `build_20*/`+`dist_20*/`）
 
-**关键结论**：DB 干净；唯一泄露面 = git 历史截图 `settings.jpg`（提交 `0b99918`/`b9ee001`，曾含 sk- 片段，v4.2.0 Release 公开过）。工作区已删除该文件，历史残留无法清理（会破坏 v4.2.0 tag）→ **修复 = 用户轮换 key**。
+**v5.0-v5.2（2026-09-07~09-09，均已开发完成未推送）：**
+- v5.2.0 拼音智能识别 2.0：Pinyin2Hanzi 离线分层引擎（DAG→HMM→单字兜底）+ 部分转换策略 + AI 增强（LLM 批量，简拼/混拼还原）；`启动.bat` 等 5 个 bat 转 CRLF（修 LF 闪退）
+- v5.1.0 个人工作台 Phase 1：AI 周度洞察（LLM+本地双模式）+ Ctrl+K 全局搜索命令面板
+- v5.0.0/v5.0.1：驾驶舱 + 速记 + projects 表 + 全局搜索；exe 重打包修复旧版启动报错
 
-**更早（v4.3 待办看板 P1-P4 + 双库根治，commit `27d689a`，tag `v4.3`）：** 三列拖拽看板 + 进度联动 + AI 推进建议 + 融合环形图 + 逾期顺延 + toast + CSV 导出 + 多维视图；`get_app_root` 双库根治。
+**更早：v4.4.0 待办删除归档（commit `b26a91a2`，未推送）；v4.3.x 安全加固/看板/换肤（已发 Release）。**
 
 ## 4. 下一步计划
-1. **【用户侧·唯一待办】轮换 API key**：登录智谱开放平台控制台 → 作废旧 key → 生成新 key → `[Environment]::SetEnvironmentVariable("GLM_API_KEY","新key","User")`。消除 git 历史截图泄露（`settings.jpg`，v4.2.0 Release 公开过 sk- 片段）的唯一有效手段
-2. 待用户试用 v4.3.1 反馈后定后续开发方向（跨平台 macOS / 浏览器扩展 / IDE 插件 / 自动更新 / i18n 等，见 `docs/PRD_WorkTrace_v4.md` §2）
+1. **上传 GitHub**：双击 `git-upload-v5.3.0.bat`（fetch 恢复 → 预览变更 → 提交 `release(v5.3.0)` → push main）
+2. **GUI 实测验证**（沙箱限制数据库写入，需手动）：双击 `启动.bat` → 记事本/浏览器输入中文查上屏文本、WPS 表格查 COM 捕获、活动页「智能识别」+「AI 增强」查 Sparkles 高亮
+3. **【可选】发布 GitHub Release v5.3.0**：`git push --tags` → `gh release create v5.3.0 dist/WorkTrace.exe`（先重新打包）
+4. 待用户试用反馈后定后续方向（见 PRD §2）
 
 ## 5. 关键文件 & 环境
-- 本会话改动文件：`src/processor/privacy_filter.py`、`src/config/settings.py`、`src/ui/web_api.py`、`src/main.py`、`src/collector/keyboard_hook.py`、`config/{config.yaml,config.example.yaml}`、`src/config/defaults.py`、`界面优化/.../{TodoView,AboutView}.tsx`、`.gitignore`、`pyproject.toml`、`blackbox.spec`、`README.md`
-- 新增：`config/.secrets.yaml`（已 gitignore，运行时按需生成）
-- 产物：`dist/WorkTrace.exe`（31.52 MB，v4.3.1）
-- 技术栈：Python 3.13（ctypes WH_KEYBOARD_LL / pywebview 6.2.1 / pywin32）+ React18/TS/Tailwind4/Vite6 + SQLite(WAL) + OpenAI 兼容 LLM（默认智谱 GLM，降级链 ollama→glm→deepseek→openai）
-- 工作目录（唯一主线）：`E:\工作\AI CLOUDE\职迹\轻量化键盘记录工具\`
-- 运行：`python -m src.main`；打包：`pyinstaller --noconfirm blackbox.spec` → `dist/WorkTrace.exe`
-- 前端：`cd 界面优化/优化图设计为macOS风格 && npm run dev`（dev）/ `npm run build:desktop`（→ `web_frontend/`，已 gitignore）
-- **数据库（唯一）：`data/blackbox.db`**（exe 与 python 共用，项目根）
-- 测试：`python -m pytest -q`（**353 passed**）
+- 本会话改动：`src/collector/{keyboard_hook.py,uia_worker.py,uia_worker_capture.py,wps_com.py,capture_router.py}`、`src/processor/pinyin_converter.py`、`src/main.py`、`src/ui/web_api.py`、`tests/`、`界面优化/.../src/app/components/{ActivityView,AboutView}.tsx`、`pyproject.toml`、`blackbox.spec`、`requirements.txt`、4 文档 + `.gitignore`
+- 产物：`web_frontend/`（已重建含 5.3.0 + Sparkles）；`dist/WorkTrace.exe`（旧，待重新打包）
+- 技术栈：Python 3.13（ctypes WH_KEYBOARD_LL / pywebview 6.2.1 / UIA 子进程 + WPS COM）+ React18/TS/Tailwind4/Vite6 + SQLite(WAL) + OpenAI 兼容 LLM（默认智谱 GLM）
+- 运行：`python -m src.main --gui`；打包：先关 WorkTrace.exe → `pyinstaller --noconfirm blackbox.spec`；前端：`cd 界面优化/优化图设计为macOS风格 && npm run build:desktop`（→ `web_frontend/`）
+- 数据库（唯一）：`data/blackbox.db`（项目根）
+- 测试：`python -m pytest -q`（**504 passed**，沙箱内加 `-p no:cacheprovider` + `PYTHONDONTWRITEBYTECODE=1`）
 
 ## 6. 已知的坑 & 注意事项
-- **git 仓库位置**：`.git` 在 `轻量化键盘记录工具\`（项目子目录），父级 `职迹\` 非 git 仓库；Claude 环境检测报「非 git 仓库」是因 primary working dir 在父级，勿被误导
-- **版本号历史坑**：v4.3 Release（tag `v4.3`，commit 27d689a）发布时**漏 bump 代码版本号**（前后端都停在 4.2.0）。v4.3.1 已统一修正。**注意 tag 是 `v4.3` 不是 `v4.3.0`**
-- **DB 无明文**：扫描确认 10 表 0 命中；密钥经环境变量 / .secrets.yaml 提供，config.yaml 只放占位符
-- **pynput 非死代码**：keyboard_hook / input_buffer / hotkey_manager 用 `pynput.keyboard.Key` 做枚举比较（不用 Listener）；blackbox.spec 收集 pynput 子模块是必要的
-- **_tasks 不加超时**：report worker 多 provider 降级串行可能 ~27min，固定超时会误杀；LLM 层已有 120s×3 retry 兜底
-- **测试连接勿复用 complete()**：推理模型（glm-4.5-flash 等）不限 max_tokens 单次回复 30s+ 会触发前端超时；`test_api_config` 用 max_tokens=1 轻量请求（2-3s 验证 Key），勿走完整 complete
-- **别用 ECharts 做报告图**：PDF window.print() 丢图，用纯 SVG
-- **LLM 纯文本输出**：结构化提取「prompt 要求 JSON + 后端容错解析」，别依赖 response_format
-- **Windows 中文路径下 node fs 删除静默失败**：删中文路径一律用 PowerShell / bash `rm`
-- **打包前先关运行中的 WorkTrace.exe**（WinError 5）；windowed exe 子进程必须 CREATE_NO_WINDOW
-- **PowerShell 跑 native exe（npm/pyinstaller）的 stderr 会被包成 NativeCommandError**，看似报错实则正常（看 exit code + 最终产物）
-- 新 DB 表走 SCHEMA_SQL，新字段走 _migrate_schema（ADD COLUMN）；长时 LLM 操作用 task_id + 轮询（web_api `_tasks`）
-- **公开仓库勿含真实数据/key**：`data/` `web_frontend/` 已 gitignore；`settings.jpg` 已从工作区删（历史残留→轮换 key 根治）
-- **看板列内排序 = sort_order 主序**（本会话叠加优先级排序）；**progress ↔ status 联动**（`web_api.update_todo` 仅显式传 progress 时触发）；**AI 推进建议只建议不改**（采纳才改）；**多维视图** status 三列可拖 / source 四列只读
+- **git 仓库位置**：`.git` 在 `轻量化键盘记录工具\`；父级非 git 仓库，环境检测误报勿信
+- **`.git` 仓库损坏状态（2026-09-21 发现）**：`objects/pack/` 只有 `.idx` 无 `.pack`（对象丢失）、`refs/` 缺失（已重建 refs/heads/main → `b26a91a2`）。必须 fetch origin 恢复对象；沙箱禁止写 `.git/objects/pack`，git 写操作只能在非 TRAE 终端
+- **UIA 必须子进程**：主进程 import comtypes 会毁掉 pywebview WebView2 窗口（白屏）；`--uia-worker` 参数须在 GUI 初始化前分流；打包版子进程复用 exe（`WorkTrace.exe --uia-worker`），`_ensure_stdout` 处理 GUI 子系统 stdout=None
+- **WPS 表格走 COM**：et.exe 单元格文本不通过 UIA 暴露；按进程列出多候选 COM 类 + duck typing（ActiveCell=表格 / Selection=文档），不能按进程名判断类型
+- **bat 必须 CRLF**：LF 换行符导致 cmd 解析 if 块中止（v5.2.0 踩过，全部 bat 已转 CRLF，新增 bat 也要转）
+- **改中文内容文件一律用 Edit 工具**：PS 5.1 `Get-Content` 无 `-Encoding utf8` 会把无 BOM UTF-8 读成 ANSI 导致 mojibake（v4.3.2 踩过）
+- 新列索引别放 SCHEMA_SQL（旧库 executescript 报 no such column）；delete_todo 必须传 deleted_at；归档文件 append-only
+- UI 字体缩放用 zoom 不用 rem；`--wt-*` token 是唯一样式真源；别用 ECharts 做报告图（PDF 丢图）
+- `_tasks` 不加超时（多 provider 降级串行可能 ~27min）；测试连接用 max_tokens=1
+- Windows 中文路径删除用 PowerShell / bash `rm`，别用 node fs；打包前先关 WorkTrace.exe（WinError 5）
+- PowerShell 跑 native exe 的 stderr 会被包成 NativeCommandError，看 exit code + 产物即可
+- 新 DB 表走 SCHEMA_SQL，新字段走 _migrate_schema；长时 LLM 操作用 task_id + 轮询
+- `v4.3_看板演示.html` 不入库（约定）；tag 注意 `v4.3` 不是 `v4.3.0`
 
 ## 7. 如何续上
 1. 读本文件 + `CLAUDE.md`
-2. **当前状态**：v4.3.1 已发布 GitHub Release（https://github.com/xwmy13141314/Personal-Work-Blackbox/releases/tag/v4.3.1），353 passed，`dist/WorkTrace.exe` 31.52MB
-3. 确认基线：`python -m pytest -q`（应 353 passed）
-4. 若用户已轮换 key → P0 彻底闭环（settings.jpg 历史泄露失效）
-5. 若要重打包：关 WorkTrace.exe → build:desktop → `pyinstaller --noconfirm blackbox.spec`
-6. 看板相关改 `TodoView.tsx` + `web_api.py` 的 todo_* 接口
+2. **当前状态**：v5.3.0 开发完成（504 passed）；本地 `.git` 损坏待 fetch 修复；**v4.4.0~v5.3.0 全部提交未推送**；上传脚本 `git-upload-v5.3.0.bat` 已备好
+3. 验证路径：双击 `启动.bat` → 中文输入查上屏文本（UIA/COM）→ 活动页「智能识别」/「AI 增强」→ 隐私模式跳过增强
+4. 确认基线：`python -m pytest -q`（应 504 passed）
+5. 若要发版：上传后 `git tag v5.3.0 && git push --tags` → `gh release create v5.3.0 dist/WorkTrace.exe`（先重打包）
+6. 采集链路相关改 `src/collector/` + `src/main.py`；前端拼音/AI 增强改 `ActivityView.tsx`；UI 配色只动 `theme.css`

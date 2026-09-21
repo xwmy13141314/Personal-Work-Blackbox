@@ -82,6 +82,42 @@ class TestConvert:
         assert "hello" in result
 
 
+class TestConfidenceGating:
+    """C3 置信度门控：短序列 DAG 高置信优先，避免单字映射硬转乱码"""
+
+    def test_gongsi_dag_wins_over_char_map(self):
+        # 2 音节：DAG '公司'(0.83) 应击败单字映射 '工四'
+        assert convert_pinyin_to_hanzi("gongsi") == "公司"
+
+    def test_mianfei(self):
+        assert convert_pinyin_to_hanzi("mianfei") == "免费"
+
+    def test_yanshou(self):
+        assert convert_pinyin_to_hanzi("yanshou") == "验收"
+
+    def test_pingshen(self):
+        assert convert_pinyin_to_hanzi("pingshen") == "评审"
+
+    def test_baocunwenjian_unchanged(self):
+        assert convert_pinyin_to_hanzi("baocunwenjian") == "保存文件"
+
+    def test_long_prefix_7char(self):
+        # 7 字母前缀 'jintian' 整体命中，不再拆成 'jint'+'ian' 乱码
+        assert convert_pinyin_to_hanzi("wojintianhenkaixin") == "我今天很开心"
+
+    def test_long_prefix_7char_2(self):
+        assert convert_pinyin_to_hanzi("jintianxiawu") == "今天下午"
+
+    def test_dag_low_confidence_falls_to_hmm(self):
+        # 3 音节 DAG 弱信号（'于到了'）→ HMM 上下文 '遇到了'
+        assert convert_pinyin_to_hanzi("yudaolewent") == "遇到了问题"
+
+    def test_high_freq_unchanged(self):
+        # 原有正确用例不回归
+        assert convert_pinyin_to_hanzi("jixu") == "继续"
+        assert convert_pinyin_to_hanzi("xiugaibaogao") == "修改报告"
+
+
 class TestHasConvertible:
     def test_has_pinyin(self):
         assert has_convertible_pinyin("jixu") == True

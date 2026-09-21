@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { Zap, RefreshCw, CheckCircle2, AlertTriangle } from "lucide-react";
 import { Badge, LabelText } from "@/app/lib/utils";
+import { applyFontSize, getFontSize, FONT_SIZE_OPTIONS, type FontSize } from "@/app/lib/fontSize";
 import type { BlackboxApi, ApiConfig } from "@/lib/pywebview";
 import logo from "@/assets/logo.png";
 
@@ -8,7 +9,7 @@ import logo from "@/assets/logo.png";
 
 // 提供商预设（均为 OpenAI 兼容协议，新增厂商只需加一条）
 const PROVIDER_PRESETS: { key: string; label: string; baseUrl: string; model: string }[] = [
-  { key: "glm", label: "智谱GLM", baseUrl: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4.5-flash" },
+  { key: "glm", label: "智谱 GLM", baseUrl: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4.5-flash" },
   { key: "qwen", label: "阿里通义", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-plus" },
   { key: "deepseek", label: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-chat" },
   { key: "moonshot", label: "Kimi", baseUrl: "https://api.moonshot.cn/v1", model: "moonshot-v1-8k" },
@@ -26,6 +27,12 @@ export function SettingsView({ api, apiConfig }: { api: BlackboxApi | null; apiC
   const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveResult, setSaveResult] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [fontSize, setFontSize] = useState<FontSize>(getFontSize());
+
+  const changeFontSize = (size: FontSize) => {
+    setFontSize(size);
+    applyFontSize(size);
+  };
 
   const selectPreset = (key: string) => {
     setPresetKey(key);
@@ -67,14 +74,14 @@ export function SettingsView({ api, apiConfig }: { api: BlackboxApi | null; apiC
   };
 
   const inputCls =
-    "w-full px-2.5 py-1.5 rounded-lg border border-black/10 bg-white/80 text-[11.5px] text-[var(--wt-text)] outline-none focus:border-[var(--wt-accent)] focus:ring-1 focus:ring-[var(--wt-accent)]/30";
+    "w-full px-3 py-2 rounded-md border border-[var(--wt-border)] bg-white text-[12px] text-[var(--wt-text)] outline-none focus:border-[var(--wt-accent)] focus:ring-2 focus:ring-[var(--wt-accent)]/20";
 
   return (
-    <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
-      <h1 className="text-[20px] font-semibold text-[var(--wt-text)] tracking-tight">设置</h1>
+    <div className="flex-1 overflow-y-auto px-8 py-6 space-y-4 max-w-[720px]">
+      <h1 className="text-[22px] font-bold text-[var(--wt-text)]">设置</h1>
 
       {/* AI 配置（可编辑表单） */}
-      <div className="rounded-xl border border-black/10 bg-white/70 p-4 space-y-2.5" style={{ backdropFilter: "blur(8px)" }}>
+      <div className="rounded-xl border border-[var(--wt-border)] bg-white p-5 space-y-3 shadow-sm">
         <div className="flex items-center justify-between">
           <p className="text-[12px] font-semibold text-[var(--wt-text)]">AI 配置</p>
           <Badge variant={apiConfig?.ai_available ? "blue" : "default"}>{apiConfig?.ai_available ? "当前可用" : "未配置"}</Badge>
@@ -87,8 +94,10 @@ export function SettingsView({ api, apiConfig }: { api: BlackboxApi | null; apiC
               <button
                 key={p.key}
                 onClick={() => selectPreset(p.key)}
-                className={`px-2.5 py-1 rounded-full text-[10.5px] font-medium transition-all ${
-                  presetKey === p.key ? "bg-[var(--wt-accent)] text-white" : "bg-black/[0.06] text-[var(--wt-text-secondary)] hover:bg-black/[0.1]"
+                className={`px-3 py-1.5 rounded-md border text-[12px] font-medium transition-all ${
+                  presetKey === p.key
+                    ? "bg-[var(--wt-accent)] text-white border-[var(--wt-accent)]"
+                    : "bg-white text-[var(--wt-text-secondary)] border-[var(--wt-border)] hover:bg-[var(--wt-bg)]"
                 }`}
               >
                 {p.label}
@@ -132,24 +141,48 @@ export function SettingsView({ api, apiConfig }: { api: BlackboxApi | null; apiC
           <button
             onClick={doTest}
             disabled={testing || !baseUrl || !model || !apiKey}
-            className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[11px] font-medium bg-black/[0.06] text-[var(--wt-text-secondary)] hover:bg-black/[0.1] disabled:opacity-50 transition-all"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-[var(--wt-border)] bg-white text-[12px] font-medium text-[var(--wt-text-secondary)] hover:bg-[var(--wt-bg)] disabled:opacity-50 transition-all"
           >
-            {testing ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
+            {testing ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5" />}
             {testing ? "测试中" : "测试连接"}
           </button>
           <button
             onClick={doSave}
             disabled={saving || !baseUrl || !model}
-            className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[11px] font-medium bg-[var(--wt-accent)] text-white hover:brightness-110 disabled:opacity-60 transition-all"
+            className="flex items-center gap-1.5 px-4 py-1.5 rounded-md text-[12px] font-medium bg-[var(--wt-accent)] text-white hover:bg-[var(--wt-accent)]/90 disabled:opacity-60 transition-all"
           >
-            {saving ? <RefreshCw className="w-3 h-3 animate-spin" /> : <CheckCircle2 className="w-3 h-3" />}
+            {saving ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
             {saving ? "保存中" : "保存配置"}
           </button>
         </div>
-        <p className="text-[10px] text-[var(--wt-text-faint)]">保存写入 config/config.yaml（自动备份 .bak），需重启应用后生效。</p>
+        <p className="text-[10.5px] text-[var(--wt-text-muted)]">保存写入 config/config.yaml（自动备份 .bak），需重启应用后生效。</p>
       </div>
 
-      <div className="rounded-xl border border-black/10 bg-white/70 p-4" style={{ backdropFilter: "blur(8px)" }}>
+      {/* 界面设置：字体大小（小=14px 基准，中=16px，大=18px） */}
+      <div className="rounded-xl border border-[var(--wt-border)] bg-white p-5 shadow-sm">
+        <p className="text-[12px] font-semibold text-[var(--wt-text)] mb-2.5">界面设置</p>
+        <LabelText>界面字体大小</LabelText>
+        <div className="inline-flex mt-1 rounded-lg border border-black/10 overflow-hidden">
+          {FONT_SIZE_OPTIONS.map((opt, i) => (
+            <button
+              key={opt.key}
+              onClick={() => changeFontSize(opt.key)}
+              className={`px-5 py-1.5 text-[11px] font-medium transition-all ${
+                i > 0 ? "border-l border-black/10" : ""
+              } ${
+                fontSize === opt.key
+                  ? "bg-[var(--wt-accent)] text-white"
+                  : "bg-white/60 text-[var(--wt-text-secondary)] hover:bg-black/[0.06]"
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+        <p className="text-[10px] text-[var(--wt-text-faint)] mt-2">调整全局界面文字大小，选择后即时生效并自动记忆。</p>
+      </div>
+
+      <div className="rounded-xl border border-[var(--wt-border)] bg-white p-5 shadow-sm">
         <p className="text-[12px] font-semibold text-[var(--wt-text)] mb-1">数据目录</p>
         <p className="text-[11px] text-[var(--wt-text-muted)] mb-2.5">在文件资源管理器中打开本地数据文件夹（数据库与 Markdown 报告）</p>
         <button
@@ -160,7 +193,7 @@ export function SettingsView({ api, apiConfig }: { api: BlackboxApi | null; apiC
         </button>
       </div>
 
-      <div className="rounded-xl border border-black/10 bg-white/70 p-4 space-y-1" style={{ backdropFilter: "blur(8px)" }}>
+      <div className="rounded-xl border border-[var(--wt-border)] bg-white p-5 space-y-1 shadow-sm">
         <div className="flex items-center gap-2 mb-1">
           <img src={logo} alt="WorkTrace" className="w-5 h-5 rounded" />
           <p className="text-[12px] font-semibold text-[var(--wt-text)]">职迹 WorkTrace</p>

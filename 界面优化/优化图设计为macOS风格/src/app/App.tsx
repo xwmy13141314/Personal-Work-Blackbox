@@ -6,7 +6,7 @@ import {
   BarChart3,
   FileText,
   Search,
-  Zap,
+  Plus,
   Play,
   Pause,
   Square,
@@ -39,6 +39,7 @@ import logo from "@/assets/logo.png";
 // 导入拆分后的组件和工具
 import {
   type ViewKey,
+  type ReportTabKey,
   navItems,
   REPORT_TABS,
   fmtDuration,
@@ -56,6 +57,10 @@ import { ActivityView } from "@/app/components/ActivityView";
 import { SettingsView } from "@/app/components/SettingsView";
 import { AboutView } from "@/app/components/AboutView";
 import { TodoView } from "@/app/components/TodoView";
+import { DashboardView } from "@/app/components/DashboardView";
+import { QuickNoteView } from "@/app/components/QuickNoteView";
+import { InsightsView } from "@/app/components/InsightsView";
+import { GlobalSearchModal } from "@/app/components/GlobalSearchModal";
 
 // ==================== 主应用 ====================
 
@@ -64,7 +69,10 @@ export default function App() {
   const [status, setStatus] = useState<Status | null>(null);
   const [apiConfig, setApiConfig] = useState<ApiConfig | null>(null);
   const [reportType, setReportType] = useState<ReportType>("daily");
+  const [reportTab, setReportTab] = useState<ReportTabKey>("daily");
   const [selectedDate, setSelectedDate] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [noteKeyword, setNoteKeyword] = useState("");
   const [dates, setDates] = useState<string[]>([]);
   const [reportedDates, setReportedDates] = useState<string[]>([]);
   const [report, setReport] = useState<Report | null>(null);
@@ -141,7 +149,7 @@ export default function App() {
   };
 
   // 视图与搜索状态
-  const [view, setView] = useState<ViewKey>("report");
+  const [view, setView] = useState<ViewKey>("dashboard");
   const [search, setSearch] = useState("");
 
   // 初始化：等待桥接 + 拉取初始数据
@@ -333,7 +341,42 @@ export default function App() {
     if (k !== "activity") setSearch("");
   };
 
-  const tabTitle = REPORT_TABS.find((t) => t.key === reportType)?.title ?? "报告";
+  // Ctrl+K 全局搜索面板
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setSearchOpen((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // 离开速记页时清空带入的关键字，避免下次进入残留过滤
+  useEffect(() => {
+    if (view !== "quicknote") setNoteKeyword("");
+  }, [view]);
+
+  // 全局搜索面板：打开报告 / 跳转待办 / 跳转速记 / 搜输入记录
+  const gsOpenReport = (type: string, date: string) => {
+    if (type === "daily" || type === "weekly" || type === "monthly") {
+      setReportType(type);
+      setReportTab(type);
+    }
+    setSelectedDate(date);
+    navigate("report");
+  };
+  const gsOpenNote = (kw: string) => {
+    setNoteKeyword(kw);
+    navigate("quicknote");
+  };
+  const gsSearchSegment = (text: string) => {
+    setSearch(text);
+    setView("activity");
+  };
+
+  const tabTitle = REPORT_TABS.find((t) => t.key === reportTab)?.title ?? "报告";
   const recBadge = (() => {
     if (!status) return { text: "加载中", variant: "default" as const };
     if (status.is_privacy) return { text: "隐私模式", variant: "yellow" as const };
@@ -347,8 +390,8 @@ export default function App() {
       {/* 日历标记样式：有采集=蓝点，有日报=底色（选中日 day_selected 优先高亮） */}
       <style>{`
         .rdp-has-data{position:relative}
-        .rdp-has-data::after{content:"";position:absolute;bottom:2px;left:50%;transform:translateX(-50%);width:4px;height:4px;border-radius:9999px;background:#34A0FF;pointer-events:none}
-        .rdp-has-report:not(.day_selected){background:rgba(0,113,227,0.15);font-weight:600}
+        .rdp-has-data::after{content:"";position:absolute;bottom:2px;left:50%;transform:translateX(-50%);width:4px;height:4px;border-radius:9999px;background:var(--wt-accent);pointer-events:none}
+        .rdp-has-report:not(.day_selected){background:rgba(37,99,235,0.12);font-weight:600}
       `}</style>
 
       {/* 三栏布局直接铺满窗口（Windows 原生标题栏） */}
@@ -365,20 +408,24 @@ export default function App() {
 
         {/* ===== Main ===== */}
         <main className="flex-1 flex flex-col min-w-0 overflow-hidden bg-[var(--wt-bg)]">
+          {view === "dashboard" && (
+            <DashboardView api={api} onNavigate={navigate} />
+          )}
+          {view === "quicknote" && <QuickNoteView api={api} initialKeyword={noteKeyword} />}
           {view === "report" && (
             <>
               {/* Toolbar */}
-              <div
-                className="flex items-center gap-2 px-5 h-11 shrink-0 border-b border-black/[0.07]"
-                style={{ background: "rgba(245,245,247,0.8)", backdropFilter: "blur(20px)" }}
-              >
-                <div className="flex gap-1 bg-black/[0.06] rounded-full p-0.5">
+              <div className="flex items-center gap-4 px-6 h-12 shrink-0 border-b border-[var(--wt-border)] bg-white">
+                <div className="flex gap-0.5 bg-[var(--wt-bg)] rounded-md p-1">
                   {REPORT_TABS.map((t) => (
                     <button
                       key={t.key}
-                      onClick={() => setReportType(t.key)}
-                      className={`px-3 py-0.5 rounded-full text-[11px] font-medium transition-all ${
-                        reportType === t.key ? "bg-[var(--wt-accent)] text-white shadow-sm" : "text-[var(--wt-text-secondary)] hover:bg-black/[0.06]"
+                      onClick={() => {
+                        setReportTab(t.key);
+                        if (t.key !== "insight") setReportType(t.key);
+                      }}
+                      className={`px-3 py-0.5 rounded text-[12px] font-medium transition-all ${
+                        reportTab === t.key ? "bg-[var(--wt-accent)] text-white shadow-sm" : "text-[var(--wt-text-secondary)] hover:bg-black/[0.06]"
                       }`}
                     >
                       {t.label}
@@ -386,65 +433,82 @@ export default function App() {
                   ))}
                 </div>
 
-                <button
-                  onClick={() => navDate(1)}
-                  disabled={navDisabled(1)}
-                  className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-black/[0.06] disabled:opacity-30 text-[var(--wt-text-tertiary)]"
-                  title="上一个"
-                >
-                  <ChevronLeft className="w-3.5 h-3.5" />
-                </button>
+                {reportTab !== "insight" && (
+                <>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => navDate(1)}
+                    disabled={navDisabled(1)}
+                    className="w-6 h-6 flex items-center justify-center rounded hover:bg-black/[0.06] disabled:opacity-30 text-[var(--wt-text-tertiary)]"
+                    title="上一个"
+                  >
+                    <ChevronLeft className="w-3.5 h-3.5" />
+                  </button>
 
-                {/* 日期显示（日历常驻在右栏，这里只显示） */}
-                <span className="px-2 py-0.5 text-[11px] font-medium text-[var(--wt-text)] min-w-[110px] text-center select-none">
-                  {dateLabel}
-                </span>
+                  {/* 日期显示（日历常驻在右栏，这里只显示） */}
+                  <span className="px-2 py-0.5 text-[12px] font-medium text-[var(--wt-text)] min-w-[110px] text-center select-none">
+                    {dateLabel}
+                  </span>
 
-                <button
-                  onClick={() => navDate(-1)}
-                  disabled={navDisabled(-1)}
-                  className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-black/[0.06] disabled:opacity-30 text-[var(--wt-text-tertiary)]"
-                  title="下一个"
-                >
-                  <ChevronLeft className="w-3.5 h-3.5 rotate-180" />
-                </button>
+                  <button
+                    onClick={() => navDate(-1)}
+                    disabled={navDisabled(-1)}
+                    className="w-6 h-6 flex items-center justify-center rounded hover:bg-black/[0.06] disabled:opacity-30 text-[var(--wt-text-tertiary)]"
+                    title="下一个"
+                  >
+                    <ChevronLeft className="w-3.5 h-3.5 rotate-180" />
+                  </button>
+                </div>
 
                 <div className="flex-1" />
 
                 <button
                   onClick={exportHtml}
                   disabled={!report}
-                  className="flex items-center gap-1 px-3 py-1 rounded-full text-[11px] font-medium text-[var(--wt-text-secondary)] hover:bg-black/[0.06] disabled:opacity-40 transition-all"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-[var(--wt-border)] bg-white text-[12px] font-medium text-[var(--wt-text)] hover:bg-[var(--wt-bg)] disabled:opacity-40 transition-all"
                   title="导出为 HTML 单文件（可离线 / 微信发送）"
                 >
-                  <FileDown className="w-3 h-3" />
+                  <FileDown className="w-3.5 h-3.5" />
                   HTML
                 </button>
                 <button
                   onClick={exportPdf}
                   disabled={!report}
-                  className="flex items-center gap-1 px-3 py-1 rounded-full text-[11px] font-medium text-[var(--wt-text-secondary)] hover:bg-black/[0.06] disabled:opacity-40 transition-all"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-[var(--wt-border)] bg-white text-[12px] font-medium text-[var(--wt-text)] hover:bg-[var(--wt-bg)] disabled:opacity-40 transition-all"
                   title="打印 / 另存为 PDF"
                 >
-                  <Printer className="w-3 h-3" />
+                  <Printer className="w-3.5 h-3.5" />
                   PDF
                 </button>
 
                 <button
                   onClick={generate}
                   disabled={genState.status === "running"}
-                  className="flex items-center gap-1 px-3 py-1 rounded-full text-[11px] font-medium bg-[var(--wt-accent)] text-white hover:brightness-110 disabled:opacity-60 transition-all"
+                  className="flex items-center gap-1.5 px-4 py-1.5 rounded-md text-[12px] font-medium bg-[var(--wt-accent)] text-white hover:bg-[var(--wt-accent)]/90 disabled:opacity-60 transition-all"
                 >
                   {genState.status === "running" ? (
-                    <RefreshCw className="w-3 h-3 animate-spin" />
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
                   ) : (
-                    <Zap className="w-3 h-3" />
+                    <Plus className="w-3.5 h-3.5" />
                   )}
                   {genState.status === "running" ? "生成中" : "生成报告"}
                 </button>
+                </>
+                )}
+                {reportTab === "insight" && (
+                  <>
+                    <div className="flex-1" />
+                    <span className="text-[11px] text-[var(--wt-text-muted)]">
+                      洞察基于本周与上周的采集数据自动生成
+                    </span>
+                  </>
+                )}
               </div>
 
               {/* Body */}
+              {reportTab === "insight" ? (
+                <InsightsView api={api} />
+              ) : (
               <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
                 <div>
                   <h1 className="text-[20px] font-semibold text-[var(--wt-text)] tracking-tight">
@@ -480,7 +544,7 @@ export default function App() {
                   </div>
                 )}
 
-                <div className="wt-print-area rounded-xl border border-black/10 bg-white/70 p-4" style={{ backdropFilter: "blur(8px)" }}>
+                <div className="wt-print-area rounded-xl border border-[var(--wt-border)] bg-white p-5 shadow-sm">
                   {reportLoading ? (
                     <p className="text-[12px] text-[var(--wt-text-muted)] py-8 text-center">加载中...</p>
                   ) : report?.markdown ? (
@@ -524,6 +588,7 @@ export default function App() {
                   )}
                 </div>
               </div>
+              )}
             </>
           )}
 
@@ -557,9 +622,9 @@ export default function App() {
         </main>
 
         {/* ===== Right panel ===== */}
-        <aside className="w-[300px] shrink-0 flex flex-col h-full overflow-y-auto border-l border-black/[0.07] bg-[var(--wt-bg-sidebar)] px-3 py-3 space-y-3">
+        <aside className="w-[320px] shrink-0 flex flex-col h-full overflow-y-auto border-l border-[var(--wt-border)] bg-[var(--wt-bg-sidebar)] px-4 py-4 space-y-4">
           {/* 录制状态 */}
-          <div className="rounded-xl border border-black/[0.07] bg-white/60 p-3" style={{ backdropFilter: "blur(12px)" }}>
+          <div className="rounded-xl border border-[var(--wt-border)] bg-white p-4 shadow-sm">
             <div className="flex items-center justify-between mb-2">
               <p className="text-[11px] font-semibold text-[var(--wt-text)]">录制状态</p>
               <Badge variant={recBadge.variant}>{recBadge.text}</Badge>
@@ -632,7 +697,7 @@ export default function App() {
           </div>
 
           {/* 提示卡 */}
-          <div className="rounded-xl border border-black/[0.07] bg-white/60 p-3" style={{ backdropFilter: "blur(12px)" }}>
+          <div className="rounded-xl border border-[var(--wt-border)] bg-white p-4 shadow-sm">
             <div className="flex items-center gap-1.5 mb-1.5">
               <Activity className="w-3.5 h-3.5 text-[var(--wt-text-muted)]" />
               <p className="text-[11px] font-semibold text-[var(--wt-text)]">使用提示</p>
@@ -642,8 +707,8 @@ export default function App() {
             </p>
           </div>
 
-          {/* 日历（常驻）：点选日期，标记有采集/有日报 */}
-          <div className="rounded-xl border border-black/[0.07] bg-white/60 overflow-hidden" style={{ backdropFilter: "blur(12px)" }}>
+          {/* 日历（常驻）：点选日期，标记有采集/有日报；纵向拉伸填满右栏 */}
+          <div className="rounded-xl border border-[var(--wt-border)] bg-white overflow-hidden flex-1 flex flex-col shadow-sm">
             <Calendar
               mode="single"
               weekStartsOn={1}
@@ -653,24 +718,40 @@ export default function App() {
               }}
               modifiers={{ hasData: dates.map(parseDate), hasReport: reportedDates.map(parseDate) }}
               modifiersClassNames={{ hasData: "rdp-has-data", hasReport: "rdp-has-report" }}
+              className="flex-1 flex flex-col"
               classNames={{
-                head_cell: "text-[var(--wt-text-muted)] rounded-md w-9 text-center font-normal text-[0.8rem]",
-                day: "inline-flex items-center justify-center size-9 p-0 font-normal aria-selected:opacity-100 rounded-md bg-transparent hover:bg-black/[0.05] text-[var(--wt-text)]",
+                month: "flex flex-col gap-4 flex-1",
+                table: "w-full border-collapse flex-1 flex flex-col",
+                tbody: "flex-1 flex flex-col",
+                row: "flex w-full mt-2 flex-1",
+                head_cell: "text-[var(--wt-text-muted)] rounded-md flex-1 text-center font-normal text-[0.8rem]",
+                day: "inline-flex items-center justify-center w-full h-full min-h-9 p-0 font-normal aria-selected:opacity-100 rounded-md bg-transparent hover:bg-black/[0.05] text-[var(--wt-text)]",
               }}
             />
-            <div className="flex items-center justify-center gap-3 pb-2 text-[10px] text-[var(--wt-text-tertiary)]">
+            <div className="flex items-center justify-center gap-4 pb-2 text-[10px] text-[var(--wt-text-tertiary)]">
               <span className="flex items-center gap-1">
-                <span className="w-2 h-2 rounded-full bg-[#34A0FF]" />
+                <span className="w-2 h-2 rounded-full bg-[var(--wt-accent)]" />
                 有采集
               </span>
               <span className="flex items-center gap-1">
-                <span className="w-3 h-3 rounded-full" style={{ background: "rgba(0,113,227,0.15)" }} />
+                <span className="w-3 h-3 rounded-full" style={{ background: "rgba(37,99,235,0.12)" }} />
                 有日报
               </span>
             </div>
           </div>
         </aside>
       </div>
+
+      {/* 全局搜索面板（Ctrl+K） */}
+      <GlobalSearchModal
+        api={api}
+        open={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        onOpenReport={gsOpenReport}
+        onNavigateTodo={() => navigate("todo")}
+        onNavigateNote={gsOpenNote}
+        onSearchSegment={gsSearchSegment}
+      />
     </div>
   );
 }

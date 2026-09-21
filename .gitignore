@@ -42,6 +42,9 @@ env/
 dist/
 build/
 *.zip
+# 带日期后缀的构建/打包目录（PyInstaller 输出）
+build_20*/
+dist_20*/
 
 # ==================== IDE ====================
 .vscode/
@@ -87,3 +90,18 @@ scripts/echarts.min.js
 
 # ==================== 调试 / 过程截图 ====================
 命名与图标/20260703-193045.jpg
+
+# ==================== TRAE 过程产物 / 一次性文件（不入库） ====================
+v4.3_看板演示.html
+git-upload-v5.3.0.bat
+@AutomationLog.txt
+.uploads/
+.trae-html-share-packages/
+.wt_build_tmp/
+worktrace-diff-analysis/
+worktrace-mockups/
+worktrace-workspace-plan/
+scripts/pwv_*.py
+scripts/diag_*.py
+scripts/verify_*.py
+scripts/test_uia_worker_e2e.py

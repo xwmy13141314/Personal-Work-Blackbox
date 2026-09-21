@@ -4,6 +4,8 @@
 # ===== 采集层 =====
 pynput>=1.7.6              # 键盘/鼠标监听（WH_KEYBOARD_LL 封装）
 pywin32>=306               # Win32 API 调用（窗口追踪、剪贴板、空闲检测）
+uiautomation>=2.0.18       # UIA 焦点控件文本采集（真实上屏文本，可选）
+comtypes>=1.2.0            # UIA 采集线程 COM 初始化（可选，uiautomation 依赖）
 
 # ===== 存储层 =====
 # SQLite 为 Python 内置，无需额外安装

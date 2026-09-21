@@ -322,3 +322,60 @@ class DataExporter:
             "updated": updated,
             "errors": errors,
         }
+
+    # ---- 删除归档（v4.4：软删除时同步落文件，append-only 永不修改）----
+
+    def append_todo_archive(self, todo, archive_dir: Path, deleted_at: str = "") -> Path:
+        """删除待办时追加写入归档文件（人读 Markdown + 机读 JSONL 各一份）
+
+        文件 append-only：恢复/彻底删除只改数据库，不回改归档文件，
+        保证任何时点都能在文件里找回全部历史删除记录。
+
+        Args:
+            todo: TodoRecord（删除前的完整记录）
+            archive_dir: 归档目录（通常 data/exports/）
+            deleted_at: 删除时间 ISO8601
+        Returns:
+            Markdown 归档文件路径
+        """
+        archive_dir = Path(archive_dir)
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        deleted_at = deleted_at or datetime.now().isoformat()
+        # 按删除月份分文件，避免单文件无限增长
+        month = deleted_at[:7] if len(deleted_at) >= 7 else datetime.now().strftime("%Y-%m")
+        md_path = archive_dir / f"todo_archive_{month}.md"
+
+        if not md_path.exists():
+            md_path.write_text(
+                f"# 待办删除归档 {month}\n\n"
+                "> 应用内删除的待办会记录在此（应用内「待办 → 归档」视图可搜索/恢复）。\n\n"
+                "| 删除时间 | 标题 | 状态 | 进度 | 优先级 | 来源 | 创建时间 |\n"
+                "|---|---|---|---|---|---|---|\n",
+                encoding="utf-8",
+            )
+        # Markdown 表格单元格内的 | 和换行转义
+        def _cell(v: str) -> str:
+            return str(v or "").replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+
+        with open(md_path, "a", encoding="utf-8") as f:
+            f.write(
+                "| {} | {} | {} | {}% | {} | {} | {} |\n".format(
+                    _cell(deleted_at.replace("T", " ")[:19]),
+                    _cell(todo.title),
+                    self._TODO_STATUS_CN.get(todo.status, todo.status),
+                    int(getattr(todo, "progress", 0) or 0),
+                    self._TODO_PRIORITY_CN.get(todo.priority, todo.priority),
+                    self._TODO_SOURCE_CN.get(todo.source_type, todo.source_type),
+                    _cell(todo.created_at.replace("T", " ")[:19]),
+                )
+            )
+
+        # JSONL：全字段机读副本（含 note/due_date/source_ref/sort_order 等）
+        record = {k: getattr(todo, k, "") for k in self._TODO_JSON_FIELDS}
+        record["id"] = todo.id
+        record["deleted_at"] = deleted_at
+        with open(archive_dir / "todo_archive.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+        logger.info("待办删除归档已追加: %s (id=%s)", md_path, todo.id)
+        return md_path

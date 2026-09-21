@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .llm_client import LLMClient
@@ -328,6 +329,275 @@ class ReportGenerator:
             return asyncio.run(self.generate_monthly_report(date))
         else:
             raise ValueError(f"不支持的报告类型: {report_type}")
+
+    # ==================== 周度洞察（v5.1） ====================
+
+    _INSIGHT_TYPE_TITLES = {
+        "best_time": "最佳工作时段",
+        "warning": "需要注意",
+        "wow": "周环比",
+        "goal": "目标达成",
+    }
+
+    @staticmethod
+    def _fmt_duration(seconds: float) -> str:
+        h = int(seconds // 3600)
+        m = int((seconds % 3600) // 60)
+        return f"{h}h{m:02d}m" if h > 0 else f"{m}m"
+
+    def _local_weekly_insights(self, stats: dict) -> list[dict]:
+        """本地规则计算洞察（LLM 失败/不可用时的兜底）"""
+        insights: list[dict] = []
+
+        # 最佳工作时段：活跃时长最高的连续 2 小时窗口
+        hourly = {h["hour"]: h["active_seconds"] for h in stats["week_hourly"]}
+        if hourly:
+            best_win, best_val = None, 0.0
+            hours_sorted = sorted(hourly)
+            for i in range(len(hours_sorted) - 1):
+                h1, h2 = hours_sorted[i], hours_sorted[i + 1]
+                if h2 == h1 + 1:
+                    v = hourly[h1] + hourly[h2]
+                    if v > best_val:
+                        best_val, best_win = v, (h1, h2)
+            if best_win and best_val >= 3600:
+                h1, h2 = best_win
+                if h1 < 11:
+                    span = f"上午 {h1}-{h2 + 1} 点"
+                elif h1 < 13:
+                    span = f"中午 {h1}-{h2 + 1} 点"
+                elif h1 < 18:
+                    span = f"下午 {h1}-{h2 + 1} 点"
+                else:
+                    span = f"晚上 {h1}-{h2 + 1} 点"
+                insights.append({
+                    "type": "best_time", "title": "最佳工作时段",
+                    "body": f"{span}效率最高（合计 {self._fmt_duration(best_val)}），建议把核心任务安排在这个时段。",
+                })
+
+        # 周环比（日均按有数据天数算，避免周中生成时误报）
+        if stats["week_daily_avg"] > 0 and stats["last_week_daily_avg"] > 0:
+            delta = (stats["week_daily_avg"] - stats["last_week_daily_avg"]) / stats["last_week_daily_avg"] * 100
+            trend = "增长" if delta >= 0 else "下降"
+            suffix = "（本周数据尚不完整）" if stats["week_days"] < 3 else ""
+            insights.append({
+                "type": "wow", "title": "周环比",
+                "body": f"本周日均活跃 {self._fmt_duration(stats['week_daily_avg'])}，较上周{trend} {abs(delta):.0f}%。{suffix}",
+            })
+
+        # 娱乐占比预警
+        if stats["entertainment_ratio"] >= 0.3:
+            insights.append({
+                "type": "warning", "title": "娱乐占比偏高",
+                "body": f"本周娱乐类活动占比 {int(stats['entertainment_ratio'] * 100)}%，建议控制在 30% 以内以保障产出。",
+            })
+
+        # 连续工作天数
+        if stats["streak_days"] >= 6:
+            insights.append({
+                "type": "warning", "title": "注意休息",
+                "body": f"已连续 {stats['streak_days']} 天有工作记录，建议安排适当休息调整。",
+            })
+
+        # 目标达成
+        if stats["week_days"] > 0:
+            goal_h = stats["daily_goal_minutes"] // 60
+            insights.append({
+                "type": "goal", "title": "目标达成",
+                "body": f"本周目标 {goal_h}h/天，实际达标 {stats['goal_hit_days']}/{stats['week_days']} 天有数据。",
+            })
+
+        return insights
+
+    async def generate_weekly_insights(
+        self, date: str | None = None, daily_goal_minutes: int = 480
+    ) -> dict | None:
+        """生成周度洞察：LLM 优先（基于两周统计），失败时本地规则兜底
+
+        Returns:
+            {"week_label", "week_start", "week_end", "insights": [{type,title,body}],
+             "source": "llm"|"local", "generated_at", "stats": {...}}
+        """
+        target_date = date or datetime.now().strftime("%Y-%m-%d")
+        week_start, week_end = _week_range(target_date)
+        label = _week_label(week_start)
+        last_start = (datetime.strptime(week_start, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
+        last_end = (datetime.strptime(week_end, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
+
+        week_daily = self._db.query_daily_totals_range(week_start, week_end)
+        last_daily = self._db.query_daily_totals_range(last_start, last_end)
+        if not week_daily and not last_daily:
+            logger.warning("周期 %s 无活动数据，跳过洞察生成", label)
+            return None
+
+        week_hourly = self._db.query_hourly_stats_range(week_start, week_end)
+        week_cats = self._db.query_category_stats_range(week_start, week_end)
+        last_cats = self._db.query_category_stats_range(last_start, last_end)
+
+        # ===== 本地统计指标 =====
+        week_total = sum(week_daily.values())
+        last_total = sum(last_daily.values())
+        week_days = len(week_daily)
+        last_days = len(last_daily)
+        # 日均按有数据天数算（周中生成时 7 天摊薄会严重失真）
+        week_avg = week_total / week_days if week_days else 0.0
+        last_avg = last_total / last_days if last_days else 0.0
+
+        week_cat_total = sum(c.get("active_seconds", 0) for c in week_cats)
+        ent_sec = sum(
+            c.get("active_seconds", 0)
+            for c in week_cats if "娱乐" in (c.get("category") or "")
+        )
+        ent_ratio = ent_sec / week_cat_total if week_cat_total > 0 else 0.0
+
+        # 连续工作天数（从今天/昨天往回数有数据的天数）
+        avail_dates = set(self._db.query_available_dates(limit=60))
+        d = datetime.now()
+        if d.strftime("%Y-%m-%d") not in avail_dates:
+            d -= timedelta(days=1)
+        streak = 0
+        while d.strftime("%Y-%m-%d") in avail_dates:
+            streak += 1
+            d -= timedelta(days=1)
+
+        goal_sec = daily_goal_minutes * 60
+        goal_hit = sum(1 for v in week_daily.values() if v >= goal_sec)
+
+        stats = {
+            "week_hourly": week_hourly,
+            "week_daily_avg": week_avg,
+            "last_week_daily_avg": last_avg,
+            "entertainment_ratio": ent_ratio,
+            "streak_days": streak,
+            "goal_hit_days": goal_hit,
+            "week_days": week_days,
+            "daily_goal_minutes": daily_goal_minutes,
+        }
+        insights = self._local_weekly_insights(stats)
+        source = "local"
+
+        # ===== LLM 增强（失败不阻断，已有本地兜底） =====
+        try:
+            def _fmt_daily(dd: dict) -> str:
+                if not dd:
+                    return "（无数据）"
+                return ", ".join(
+                    f"{k[5:]}: {self._fmt_duration(v)}" for k, v in sorted(dd.items())
+                )
+
+            def _fmt_hourly(hh: list) -> str:
+                if not hh:
+                    return "（无数据）"
+                return ", ".join(
+                    f"{h['hour']:02d}:00 {self._fmt_duration(h['active_seconds'])}" for h in hh
+                )
+
+            def _fmt_cats(cc: list) -> str:
+                total = sum(c.get("active_seconds", 0) for c in cc)
+                if total <= 0:
+                    return "（无数据）"
+                parts = []
+                for c in cc[:8]:
+                    pct = int(c.get("active_seconds", 0) / total * 100)
+                    parts.append(f"{c.get('category', '?')} {pct}%")
+                return ", ".join(parts)
+
+            prompt_data = {
+                "week_label": label,
+                "week_start": week_start, "week_end": week_end,
+                "week_daily": _fmt_daily(week_daily),
+                "week_hourly": _fmt_hourly(week_hourly),
+                "week_categories": _fmt_cats(week_cats),
+                "week_days": week_days,
+                "daily_goal_minutes": daily_goal_minutes,
+                "goal_hit_days": goal_hit,
+                "last_week_start": last_start, "last_week_end": last_end,
+                "last_week_daily": _fmt_daily(last_daily),
+                "last_week_categories": _fmt_cats(last_cats),
+                "last_week_days": last_days,
+            }
+            messages = self._prompt.build_weekly_insight_prompt(prompt_data)
+            content, _model = await self._llm.complete(messages)
+
+            import json as _json
+            from src.ai.todo_extractor import _strip_code_fence, _extract_json_array
+            arr_text = _extract_json_array(_strip_code_fence(content.strip()))
+            if arr_text:
+                data = _json.loads(arr_text)
+                if isinstance(data, list) and data:
+                    parsed = []
+                    for item in data:
+                        if (
+                            isinstance(item, dict)
+                            and item.get("type") in self._INSIGHT_TYPE_TITLES
+                            and str(item.get("body") or "").strip()
+                        ):
+                            parsed.append({
+                                "type": item["type"],
+                                "title": str(item.get("title") or "").strip()[:20]
+                                or self._INSIGHT_TYPE_TITLES[item["type"]],
+                                "body": str(item["body"]).strip(),
+                            })
+                    if parsed:
+                        insights = parsed
+                        source = "llm"
+        except Exception:
+            logger.exception("LLM 周度洞察生成失败，使用本地统计洞察")
+
+        result = {
+            "week_label": label,
+            "week_start": week_start,
+            "week_end": week_end,
+            "insights": insights,
+            "source": source,
+            "generated_at": datetime.now().isoformat(),
+            "stats": {
+                "week_daily_avg_seconds": round(week_avg, 1),
+                "last_week_daily_avg_seconds": round(last_avg, 1),
+                "entertainment_ratio": round(ent_ratio, 3),
+                "streak_days": streak,
+                "goal_hit_days": goal_hit,
+                "week_days": week_days,
+            },
+        }
+        self._save_insights_cache(label, result)
+        return result
+
+    def generate_weekly_insights_sync(
+        self, date: str | None = None, daily_goal_minutes: int = 480
+    ) -> dict | None:
+        """同步版本的周度洞察生成（工作线程调用）"""
+        return asyncio.run(self.generate_weekly_insights(date, daily_goal_minutes))
+
+    # ===== 洞察缓存（data/insights/weekly_YYYY-Www.json） =====
+
+    def _insights_cache_path(self, label: str) -> Path:
+        cache_dir = self._db._db_path.parent / "insights"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        return cache_dir / f"weekly_{label}.json"
+
+    def _save_insights_cache(self, label: str, result: dict) -> None:
+        try:
+            import json
+            self._insights_cache_path(label).write_text(
+                json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except Exception:
+            logger.exception("洞察缓存写入失败")
+
+    def get_weekly_insights(self, date: str | None = None) -> dict | None:
+        """读取本周洞察缓存（无缓存返回 None，由前端触发 generate）"""
+        target_date = date or datetime.now().strftime("%Y-%m-%d")
+        week_start, _ = _week_range(target_date)
+        label = _week_label(week_start)
+        p = self._insights_cache_path(label)
+        try:
+            if p.exists():
+                import json
+                return json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            logger.exception("洞察缓存读取失败")
+        return None
 
     # ==================== 自动补生成 ====================
 

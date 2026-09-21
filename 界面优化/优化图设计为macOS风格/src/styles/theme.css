@@ -1,74 +1,74 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  --font-size: 13px;
-  --background: #ececec;
-  --foreground: #1d1d1f;
-  --card: rgba(255, 255, 255, 0.72);
-  --card-foreground: #1d1d1f;
-  --popover: rgba(255, 255, 255, 0.9);
-  --popover-foreground: #1d1d1f;
-  --primary: #0071e3;
+  --font-size: 14px;
+  --background: #f3f4f6;
+  --foreground: #111827;
+  --card: #ffffff;
+  --card-foreground: #111827;
+  --popover: #ffffff;
+  --popover-foreground: #111827;
+  --primary: #2563eb;
   --primary-foreground: #ffffff;
   --secondary: rgba(0, 0, 0, 0.06);
-  --secondary-foreground: #1d1d1f;
-  --muted: rgba(0, 0, 0, 0.04);
-  --muted-foreground: #86868b;
-  --accent: rgba(0, 113, 227, 0.1);
-  --accent-foreground: #0071e3;
-  --destructive: #ff3b30;
+  --secondary-foreground: #111827;
+  --muted: #f9fafb;
+  --muted-foreground: #4b5563;
+  --accent: rgba(37, 99, 235, 0.1);
+  --accent-foreground: #2563eb;
+  --destructive: #ef4444;
   --destructive-foreground: #ffffff;
-  --border: rgba(0, 0, 0, 0.08);
+  --border: #e5e7eb;
   --input: transparent;
-  --input-background: rgba(0, 0, 0, 0.05);
-  --switch-background: #d1d1d6;
+  --input-background: #f9fafb;
+  --switch-background: #d1d5db;
   --font-weight-medium: 500;
   --font-weight-normal: 400;
-  --ring: rgba(0, 113, 227, 0.4);
-  --chart-1: #0071e3;
-  --chart-2: #34c759;
-  --chart-3: #ff9f0a;
-  --chart-4: #ff3b30;
+  --ring: rgba(37, 99, 235, 0.4);
+  --chart-1: #2563eb;
+  --chart-2: #22c55e;
+  --chart-3: #f59e0b;
+  --chart-4: #ef4444;
   --chart-5: #af52de;
   --radius: 0.5rem;
   --sidebar: rgba(240, 240, 245, 0.85);
-  --sidebar-foreground: #1d1d1f;
-  --sidebar-primary: #0071e3;
+  --sidebar-foreground: #111827;
+  --sidebar-primary: #2563eb;
   --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: rgba(0, 113, 227, 0.08);
-  --sidebar-accent-foreground: #0071e3;
-  --sidebar-border: rgba(0, 0, 0, 0.08);
-  --sidebar-ring: rgba(0, 113, 227, 0.4);
+  --sidebar-accent: rgba(37, 99, 235, 0.08);
+  --sidebar-accent-foreground: #2563eb;
+  --sidebar-border: #e5e7eb;
+  --sidebar-ring: rgba(37, 99, 235, 0.4);
 
-  /* ==================== WorkTrace 自定义主题变量 ==================== */
+  /* ==================== WorkTrace 自定义主题变量（2026-08 UI 换肤：对齐职迹UI优化效果图） ==================== */
   /* 文本颜色 */
-  --wt-text: #1d1d1f;
-  --wt-text-secondary: #3a3a3c;
-  --wt-text-tertiary: #6e6e73;
-  --wt-text-muted: #86868b;
-  --wt-text-faint: #a1a1a6;
+  --wt-text: #111827;
+  --wt-text-secondary: #4b5563;
+  --wt-text-tertiary: #6b7280;
+  --wt-text-muted: #9ca3af;
+  --wt-text-faint: #d1d5db;
 
   /* 强调色 */
-  --wt-accent: #0071e3;
-  --wt-accent-light: #34A0FF;
-  --wt-accent-bg: rgba(0, 113, 227, 0.15);
+  --wt-accent: #2563eb;
+  --wt-accent-light: #60a5fa;
+  --wt-accent-bg: rgba(37, 99, 235, 0.1);
 
   /* 语义色 */
-  --wt-success: #34C759;
-  --wt-danger: #FF3B30;
-  --wt-warning: #FF9F0A;
+  --wt-success: #22c55e;
+  --wt-danger: #ef4444;
+  --wt-warning: #f59e0b;
 
-  /* 背景色 */
-  --wt-bg: #f5f5f7;
-  --wt-bg-sidebar: #f0f0f5;
-  --wt-bg-surface: rgba(255, 255, 255, 0.7);
+  /* 背景色（左导航保留原浅色毛玻璃，用户确认不改暗色） */
+  --wt-bg: #f3f4f6;
+  --wt-bg-sidebar: #f9fafb;
+  --wt-bg-surface: #ffffff;
   --wt-bg-sidebar-surface: rgba(236, 236, 240, 0.9);
 
   /* 边框 */
-  --wt-border: rgba(0, 0, 0, 0.07);
-  --wt-border-light: rgba(0, 0, 0, 0.1);
+  --wt-border: #e5e7eb;
+  --wt-border-light: #e5e7eb;
   --wt-border-faint: rgba(0, 0, 0, 0.06);
-  --wt-border-input: rgba(0, 0, 0, 0.1);
+  --wt-border-input: #d1d5db;
 }
 
 .dark {
@@ -156,6 +156,7 @@
 
   body {
     @apply bg-background text-foreground;
+    font-family: Inter, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   }
 
   /**

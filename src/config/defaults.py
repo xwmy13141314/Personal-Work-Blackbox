@@ -8,6 +8,18 @@ DEFAULTS = {
         "clipboard_enabled": True,
         "clipboard_max_length": 10240,
         "idle_threshold": 300,
+        # 采集准确性增强（2026-09-11 新增）
+        # accurate_mode=False 时完全回到"纯键盘 + 拼音引擎"链路，可一键回退
+        "accurate_mode": True,
+        "uia_capture_enabled": True,
+        "uia_capture_interval_ms": 500,
+        "com_capture_enabled": True,
+    },
+    # 界面模式（2026-09-14 新增）
+    # auto = 先试嵌入窗口，超时自动切浏览器 + 托盘；embedded = 仅嵌入；browser = 仅浏览器
+    "ui": {
+        "mode": "auto",
+        "embed_timeout_seconds": 8,
     },
     "privacy": {
         "app_blacklist": [

@@ -44,6 +44,7 @@ class SystemTray:
         on_quit: Callable[[], None],
         on_generate_report: Optional[Callable[[], None]] = None,
         on_view_report: Optional[Callable[[], None]] = None,
+        on_open_ui: Optional[Callable[[], None]] = None,
     ):
         self._on_pause_resume = on_pause_resume
         self._on_privacy_mode = on_privacy_mode
@@ -51,6 +52,7 @@ class SystemTray:
         self._on_quit = on_quit
         self._on_generate_report = on_generate_report
         self._on_view_report = on_view_report
+        self._on_open_ui = on_open_ui
         self._tray = None
         self._is_paused = False
 
@@ -63,6 +65,8 @@ class SystemTray:
         # 构建菜单项
         menu_items = [
             pystray.MenuItem("Personal Work Blackbox", None, enabled=False),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("打开控制台界面", self._open_ui, default=True),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("暂停采集 / 恢复采集", self._toggle_pause_resume),
             pystray.MenuItem("隐私模式 (30分钟)", self._activate_privacy_mode),
@@ -123,6 +127,10 @@ class SystemTray:
     def _view_report(self, icon, item):
         if self._on_view_report:
             self._on_view_report()
+
+    def _open_ui(self, icon, item):
+        if self._on_open_ui:
+            self._on_open_ui()
 
     def _open_data_dir(self, icon, item):
         import subprocess

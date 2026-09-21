@@ -209,6 +209,48 @@ JSON 数组，每元素：
 只输出 JSON 数组本身，不要包裹代码块，不要解释。"""
 
 
+# ==================== 周度洞察 Prompt（v5.1） ====================
+
+BUILTIN_WEEKLY_INSIGHT_SYSTEM = """你是一个个人工作效率洞察助手。你的任务是基于用户本周与上周的电脑活动统计数据，生成 3~4 条简短的效率洞察。
+
+规则：
+1. 只基于给定的统计数据，不要编造数字或信息
+2. 每条洞察一句话标题 + 2 句以内正文，语气友好、具体、可执行
+3. 四种洞察类型（type），按数据价值挑选 3~4 条输出：
+   - best_time：最佳工作时段（基于小时活跃分布，指出效率最高的 1~2 个时段并建议用途）
+   - warning：需要注意的信号（如娱乐占比过高、连续工作天数过多、工作时长骤降）
+   - wow：周环比变化（本周日均时长 vs 上周，指出增长/下降幅度）
+   - goal：目标与节奏建议（结合每日时长分布给节奏建议）
+4. 数字必须与统计数据一致，不要四舍五入到错误的量级
+5. 输出必须是合法 JSON 数组，不要任何其他文字
+6. 数据不足以支撑某类洞察时，跳过该类，不要硬编"""
+
+BUILTIN_WEEKLY_INSIGHT_USER = """请基于以下两周活动统计生成周度洞察。
+
+## 本周（{week_label}，{week_start} ~ {week_end}）
+- 每日活跃时长：{week_daily}
+- 小时活跃分布：{week_hourly}
+- 分类占比：{week_categories}
+- 有数据天数：{week_days} 天
+- 今日目标：{daily_goal_minutes} 分钟/天，本周达标 {goal_hit_days} 天
+
+## 上周（{last_week_start} ~ {last_week_end}）
+- 每日活跃时长：{last_week_daily}
+- 分类占比：{last_week_categories}
+- 有数据天数：{last_week_days} 天
+
+## 输出格式
+JSON 数组，每元素：
+- type："best_time" / "warning" / "wow" / "goal"
+- title：一句话标题（10 字以内）
+- body：洞察正文（2 句以内，可含具体数字）
+
+示例：
+[{{"type": "best_time", "title": "最佳工作时段", "body": "上午 10-12 点效率最高，建议安排核心开发任务。"}}, {{"type": "wow", "title": "周环比", "body": "本周日均 5h12m，较上周增长 18%。"}}]
+
+只输出 JSON 数组本身，不要包裹代码块，不要解释。"""
+
+
 class PromptEngine:
     """Prompt 模板引擎
 
@@ -231,6 +273,8 @@ class PromptEngine:
         self._timedist_extract_user = BUILTIN_TIMEDIST_USER_TEMPLATE
         self._todo_progress_system = BUILTIN_TODO_PROGRESS_SYSTEM
         self._todo_progress_user = BUILTIN_TODO_PROGRESS_USER
+        self._weekly_insight_system = BUILTIN_WEEKLY_INSIGHT_SYSTEM
+        self._weekly_insight_user = BUILTIN_WEEKLY_INSIGHT_USER
         self._load_templates()
 
     def _load_templates(self):
@@ -418,6 +462,18 @@ class PromptEngine:
         )
         return [
             {"role": "system", "content": self._todo_progress_system},
+            {"role": "user", "content": user_content},
+        ]
+
+    def build_weekly_insight_prompt(self, data: dict[str, Any]) -> list[dict[str, str]]:
+        """构建周度洞察 Prompt（v5.1）
+
+        Args:
+            data: 已格式化好的统计字段（week_label/week_daily/week_hourly/...）
+        """
+        user_content = self._weekly_insight_user.format(**data)
+        return [
+            {"role": "system", "content": self._weekly_insight_system},
             {"role": "user", "content": user_content},
         ]
 

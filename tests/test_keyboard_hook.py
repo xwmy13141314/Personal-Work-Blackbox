@@ -1,7 +1,7 @@
 """KeyboardHook 单元测试
 
 测试覆盖：
-1. KeyboardHook._on_ime_result_from_hook 去重逻辑
+1. KeyboardHook._emit_ime_text 去重逻辑
 2. KeyEvent 属性测试（pynput Key 枚举）
 """
 
@@ -28,12 +28,12 @@ from src.collector.keyboard_hook import (
 # ==================== KeyboardHook IME 去重测试 ====================
 
 class TestKeyboardHookIMEResultDedup:
-    """KeyboardHook IME 结果去重逻辑测试"""
+    """KeyboardHook IME 结果去重逻辑测试（_emit_ime_text）"""
 
     def test_hook_result_emitted_once(self):
         events = []
         hook = KeyboardHook(on_event=lambda e: events.append(e))
-        hook._on_ime_result_from_hook("你好")
+        assert hook._emit_ime_text("你好") is True
 
         assert len(events) == 1
         assert events[0].char == "你好"
@@ -43,16 +43,16 @@ class TestKeyboardHookIMEResultDedup:
     def test_duplicate_result_not_emitted(self):
         events = []
         hook = KeyboardHook(on_event=lambda e: events.append(e))
-        hook._on_ime_result_from_hook("你好")
-        hook._on_ime_result_from_hook("你好")
+        assert hook._emit_ime_text("你好") is True
+        assert hook._emit_ime_text("你好") is False
 
         assert len(events) == 1
 
     def test_different_result_emitted(self):
         events = []
         hook = KeyboardHook(on_event=lambda e: events.append(e))
-        hook._on_ime_result_from_hook("你好")
-        hook._on_ime_result_from_hook("世界")
+        assert hook._emit_ime_text("你好") is True
+        assert hook._emit_ime_text("世界") is True
 
         assert len(events) == 2
         assert events[0].char == "你好"
@@ -61,9 +61,18 @@ class TestKeyboardHookIMEResultDedup:
     def test_empty_result_not_emitted(self):
         events = []
         hook = KeyboardHook(on_event=lambda e: events.append(e))
-        hook._on_ime_result_from_hook("")
+        assert hook._emit_ime_text("") is False
 
         assert events == []
+
+    def test_on_ime_text_callback_invoked(self):
+        """on_ime_text 回调仅在去重通过时触发"""
+        captured = []
+        hook = KeyboardHook(on_event=lambda e: None, on_ime_text=captured.append)
+        hook._emit_ime_text("你好")
+        hook._emit_ime_text("你好")
+
+        assert captured == ["你好"]
 
 
 # ==================== KeyEvent 属性测试 ====================

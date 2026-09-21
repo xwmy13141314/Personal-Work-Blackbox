@@ -1,23 +1,53 @@
 import React from "react";
-import { FileText, BarChart3, Activity, CheckSquare, Settings, Info } from "lucide-react";
+import { LayoutDashboard, StickyNote, FileText, BarChart3, Activity, CheckSquare, Settings, Info } from "lucide-react";
 import type { ReportType } from "@/lib/pywebview";
 
 // ==================== 视图键 ====================
-export type ViewKey = "report" | "stats" | "activity" | "todo" | "settings" | "about";
+export type ViewKey = "dashboard" | "quicknote" | "report" | "stats" | "activity" | "todo" | "settings" | "about";
 
-export const navItems: { key: ViewKey; icon: typeof FileText; label: string; badge?: string }[] = [
-  { key: "report", icon: FileText, label: "报告" },
-  { key: "stats", icon: BarChart3, label: "统计" },
-  { key: "activity", icon: Activity, label: "活动" },
-  { key: "todo", icon: CheckSquare, label: "待办", badge: "新" },
-  { key: "settings", icon: Settings, label: "设置" },
-  { key: "about", icon: Info, label: "关于" },
+// 导航分组结构
+export interface NavGroup {
+  group: string;
+  items: { key: ViewKey; icon: typeof FileText; label: string }[];
+}
+
+export const navGroups: NavGroup[] = [
+  {
+    group: "工作台",
+    items: [
+      { key: "dashboard", icon: LayoutDashboard, label: "驾驶舱" },
+      { key: "quicknote", icon: StickyNote, label: "速记" },
+    ],
+  },
+  {
+    group: "记录与报告",
+    items: [
+      { key: "report", icon: FileText, label: "报告" },
+      { key: "stats", icon: BarChart3, label: "统计" },
+      { key: "activity", icon: Activity, label: "活动" },
+      { key: "todo", icon: CheckSquare, label: "待办" },
+    ],
+  },
+  {
+    group: "系统",
+    items: [
+      { key: "settings", icon: Settings, label: "设置" },
+      { key: "about", icon: Info, label: "关于" },
+    ],
+  },
 ];
 
-export const REPORT_TABS: { key: ReportType; label: string; title: string }[] = [
+// 兼容旧代码的 flat navItems
+export const navItems: { key: ViewKey; icon: typeof FileText; label: string }[] =
+  navGroups.flatMap((g) => g.items);
+
+export type ReportTabKey = ReportType | "insight";
+
+export const REPORT_TABS: { key: ReportTabKey; label: string; title: string }[] = [
   { key: "daily", label: "日", title: "日报" },
   { key: "weekly", label: "周", title: "周报" },
   { key: "monthly", label: "月", title: "月报" },
+  { key: "insight", label: "洞察", title: "AI 周度洞察" },
 ];
 
 // ==================== 通用组件 ====================

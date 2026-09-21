@@ -34,6 +34,8 @@ from .models import (
     PeriodReportRecord,
     WindowEventRecord,
     TodoRecord,
+    NoteRecord,
+    ProjectRecord,
 )
 
 logger = logging.getLogger(__name__)
@@ -129,7 +131,8 @@ CREATE TABLE IF NOT EXISTS todos (
     updated_at    TEXT NOT NULL,
     completed_at  TEXT,
     sort_order    REAL NOT NULL DEFAULT 0,
-    progress      INTEGER NOT NULL DEFAULT 0
+    progress      INTEGER NOT NULL DEFAULT 0,
+    deleted_at    TEXT
 );
 
 -- 待办推进建议（AI 结合当日活动给的建议，P2 §4.6）
@@ -154,6 +157,34 @@ CREATE TABLE IF NOT EXISTS todo_notify_log (
     PRIMARY KEY (todo_id, notify_date, notify_type)
 );
 
+-- 速记表（P1：单行速记 + 上下文关联）
+CREATE TABLE IF NOT EXISTS notes (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    content         TEXT NOT NULL,
+    source          TEXT DEFAULT 'manual',
+    source_ref      TEXT DEFAULT '',
+    linked_todo_id  INTEGER,
+    pinned          INTEGER DEFAULT 0,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    deleted_at      TEXT
+);
+
+-- 项目表（P1：待办/速记分类关联）
+CREATE TABLE IF NOT EXISTS projects (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,
+    color       TEXT DEFAULT '#007AFF',
+    icon        TEXT DEFAULT '📁',
+    description TEXT DEFAULT '',
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    archived    INTEGER DEFAULT 0
+);
+
+-- 待办项目关联列（迁移添加）
+-- projects 关联通过 todos.project_id 软关联
+
 -- 索引
 CREATE INDEX IF NOT EXISTS idx_sessions_start ON sessions(start_time);
 CREATE INDEX IF NOT EXISTS idx_sessions_process ON sessions(process_name);
@@ -167,6 +198,11 @@ CREATE INDEX IF NOT EXISTS idx_todos_status ON todos(status);
 CREATE INDEX IF NOT EXISTS idx_todos_draft ON todos(is_draft);
 CREATE INDEX IF NOT EXISTS idx_todos_due ON todos(due_date);
 CREATE INDEX IF NOT EXISTS idx_todos_source ON todos(source_type, source_ref);
+CREATE INDEX IF NOT EXISTS idx_notes_created ON notes(created_at);
+CREATE INDEX IF NOT EXISTS idx_notes_pinned ON notes(pinned);
+CREATE INDEX IF NOT EXISTS idx_notes_deleted ON notes(deleted_at);
+CREATE INDEX IF NOT EXISTS idx_notes_linked_todo ON notes(linked_todo_id);
+CREATE INDEX IF NOT EXISTS idx_projects_archived ON projects(archived);
 """
 
 
@@ -191,22 +227,58 @@ class Database:
         否则回退到普通 sqlite3。
         """
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        if self._encryption_key and HAS_SQLCIPHER:
-            # 使用 SQLCipher 加密连接
-            self._conn = sqlcipher.connect(
-                str(self._db_path),
-                check_same_thread=False,
-            )
-            self._conn.execute(f"PRAGMA key='{self._encryption_key}'")
-        else:
-            # 回退到普通 sqlite3
-            if self._encryption_key and not HAS_SQLCIPHER:
-                logger.warning("已配置加密密钥但 sqlcipher3 未安装，回退到明文 sqlite3")
+
+        # 清理可能残留的辅助文件
+        for suffix in ("-wal", "-shm", "-journal"):
+            p = self._db_path.with_name(self._db_path.name + suffix)
+            if p.exists():
+                try:
+                    p.unlink()
+                except Exception:
+                    pass
+
+        # 尝试连接：WAL → DELETE → 新建
+        connected = False
+        for mode in [self._journal_mode, "DELETE"]:
+            try:
+                if self._encryption_key and HAS_SQLCIPHER:
+                    self._conn = sqlcipher.connect(
+                        str(self._db_path), check_same_thread=False
+                    )
+                    self._conn.execute(f"PRAGMA key='{self._encryption_key}'")
+                else:
+                    self._conn = sqlite3.connect(
+                        str(self._db_path), check_same_thread=False
+                    )
+                self._conn.execute(f"PRAGMA journal_mode={mode}")
+                self._journal_mode = mode
+                connected = True
+                break
+            except Exception as e:
+                logger.warning("数据库连接失败 (mode=%s): %s", mode, e)
+                if self._conn:
+                    try:
+                        self._conn.close()
+                    except Exception:
+                        pass
+                    self._conn = None
+
+        if not connected:
+            # 最后手段：备份旧库，创建新库
+            bak = self._db_path.with_suffix(".db.corrupt")
+            if self._db_path.exists():
+                try:
+                    self._db_path.rename(bak)
+                    logger.warning("旧数据库已备份为 %s，将创建新数据库", bak)
+                except Exception:
+                    pass
             self._conn = sqlite3.connect(
-                str(self._db_path),
-                check_same_thread=False,
+                str(self._db_path), check_same_thread=False
             )
-        self._conn.execute(f"PRAGMA journal_mode={self._journal_mode}")
+            self._conn.execute("PRAGMA journal_mode=DELETE")
+            self._journal_mode = "DELETE"
+            logger.warning("已创建全新数据库: %s", self._db_path)
+
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.executescript(SCHEMA_SQL)
         self._migrate_schema()
@@ -223,6 +295,8 @@ class Database:
             ("sessions", "icon", "TEXT DEFAULT '📦'"),
             ("todos", "sort_order", "REAL NOT NULL DEFAULT 0"),
             ("todos", "progress", "INTEGER NOT NULL DEFAULT 0"),
+            ("todos", "deleted_at", "TEXT"),
+            ("todos", "project_id", "INTEGER"),
         ]
         for table, column, col_type in migrations:
             try:
@@ -247,6 +321,14 @@ class Database:
                 logger.info("数据库迁移: 回填 %d 条 todos 的 sort_order", len(rows))
         except Exception as e:
             logger.debug("todos sort_order 回填跳过: %s", e)
+        # 归档索引：列由上面的迁移补充后才能建（不能放 SCHEMA_SQL，
+        # 否则旧库 executescript 时列还不存在会报错）
+        try:
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_todos_deleted ON todos(deleted_at)"
+            )
+        except Exception as e:
+            logger.debug("todos deleted_at 索引跳过: %s", e)
         self._conn.commit()
 
     def migrate_to_encrypted(self, encryption_key: str) -> bool:
@@ -382,6 +464,61 @@ class Database:
                     int(segment.is_filtered), segment.char_count,
                 ),
             )
+
+    def find_recent_segment(self, within_seconds: float = 60.0,
+                            source: str = "keyboard",
+                            after_id: int = 0) -> dict | None:
+        """查找最近 N 秒内、指定来源的下一条未消费文本片段
+
+        用途：WPS 表格"提交回填"。
+        WPS 编辑期间键盘钩子只能拿到拼音并提交入库；等用户离开单元格
+        （内容真正写入单元格）后，COM 能读到汉字，此时需要找回刚才那条
+        拼音片段并替换掉。
+
+        Args:
+            after_id: 只返回 id 大于该值的片段（回填水位线）。
+                键盘片段是**延迟批量落库**的（InputBuffer 有超时），
+                用递增水位线按顺序消费，可避免"回填到更早的记录"。
+                取 `ORDER BY id ASC`（最老的一条未消费片段），
+                保证多次提交与多条片段一一对应。
+
+        Returns:
+            {"id", "session_id", "timestamp", "raw_text", "char_count"} 或 None
+        """
+        if not self._conn:
+            return None
+        from datetime import timedelta
+        cutoff = (datetime.now() - timedelta(seconds=within_seconds)).isoformat()
+        with self._cursor() as cur:
+            cur.execute(
+                """SELECT id, session_id, timestamp, raw_text, char_count
+                   FROM text_segments
+                   WHERE source = ? AND timestamp >= ? AND is_filtered = 0 AND id > ?
+                   ORDER BY id ASC LIMIT 1""",
+                (source, cutoff, int(after_id or 0)),
+            )
+            row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0], "session_id": row[1], "timestamp": row[2],
+            "raw_text": row[3], "char_count": row[4],
+        }
+
+    def update_segment_text(self, segment_id: int, new_text: str) -> bool:
+        """更新文本片段的原文（WPS 提交回填：拼音 → 汉字）
+
+        Returns:
+            True 表示确实更新了一行
+        """
+        if not self._conn:
+            return False
+        with self._cursor() as cur:
+            cur.execute(
+                "UPDATE text_segments SET raw_text = ?, char_count = ? WHERE id = ?",
+                (new_text, len(new_text), segment_id),
+            )
+            return cur.rowcount > 0
 
     def insert_session_with_segments(
         self, session: SessionRecord, segments: list[TextSegmentRecord]
@@ -871,14 +1008,14 @@ class Database:
         include_drafts: bool = True,
         source_ref: str | None = None,
     ) -> list[TodoRecord]:
-        """查询待办列表（默认含草稿，按创建时间降序）
+        """查询待办列表（默认含草稿，按创建时间降序；不含软删除的归档待办）
 
         Args:
             status: 按状态过滤（None = 全部）
             include_drafts: 是否包含草稿区的待办
             source_ref: 按来源标识过滤
         """
-        conditions = []
+        conditions = ["deleted_at IS NULL"]
         params: list = []
         if status:
             conditions.append("status = ?")
@@ -928,10 +1065,78 @@ class Database:
             cur.execute(f"UPDATE todos SET {set_clause} WHERE id = ?", params)
             return cur.rowcount > 0
 
-    def delete_todo(self, todo_id: int) -> bool:
-        """删除一条待办"""
+    def delete_todo(self, todo_id: int, deleted_at: str | None = None) -> bool:
+        """软删除一条待办（写入 deleted_at，主界面不再显示，归档视图可查）
+
+        Args:
+            deleted_at: 删除时间 ISO8601（None = 由调用方传入；这里必须显式提供，
+                        避免误调用产生无时间戳的归档记录）
+        """
+        if not deleted_at:
+            return False
         with self._cursor() as cur:
-            cur.execute("DELETE FROM todos WHERE id = ?", (todo_id,))
+            cur.execute(
+                "UPDATE todos SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL",
+                (deleted_at, todo_id),
+            )
+            return cur.rowcount > 0
+
+    def query_archived_todos(
+        self,
+        keyword: str = "",
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[TodoRecord], int]:
+        """查询已归档（软删除）的待办，返回 (记录列表, 匹配总数)
+
+        Args:
+            keyword: 标题/备注模糊匹配（空 = 全部）
+            limit/offset: 分页
+        按 deleted_at 降序（最近删除的在前）。
+        """
+        conditions = ["deleted_at IS NOT NULL"]
+        params: list = []
+        if keyword:
+            conditions.append("(title LIKE ? OR note LIKE ?)")
+            kw = f"%{keyword}%"
+            params.extend([kw, kw])
+        where = " WHERE " + " AND ".join(conditions)
+        with self._cursor() as cur:
+            cur.execute(f"SELECT COUNT(*) FROM todos{where}", params)
+            total = cur.fetchone()[0] or 0
+            cur.execute(
+                f"""SELECT id, title, status, priority, note, due_date, source_type,
+                    source_ref, is_draft, created_at, updated_at, completed_at,
+                    sort_order, progress, deleted_at
+                    FROM todos{where}
+                    ORDER BY deleted_at DESC
+                    LIMIT ? OFFSET ?""",
+                [*params, int(limit), int(offset)],
+            )
+            rows = cur.fetchall()
+        items = []
+        for row in rows:
+            t = self._row_to_todo(row)
+            t.deleted_at = row[14] or ""
+            items.append(t)
+        return items, total
+
+    def restore_todo(self, todo_id: int) -> bool:
+        """恢复一条归档待办（清空 deleted_at，sort_order 保留 → 回到原看板位置）"""
+        with self._cursor() as cur:
+            cur.execute(
+                "UPDATE todos SET deleted_at = NULL WHERE id = ? AND deleted_at IS NOT NULL",
+                (todo_id,),
+            )
+            return cur.rowcount > 0
+
+    def purge_todo(self, todo_id: int) -> bool:
+        """彻底删除一条归档待办（真 DELETE，仅归档视图手动触发）"""
+        with self._cursor() as cur:
+            cur.execute(
+                "DELETE FROM todos WHERE id = ? AND deleted_at IS NOT NULL",
+                (todo_id,),
+            )
             return cur.rowcount > 0
 
     def reorder_todos(self, items: list[dict]) -> int:
@@ -980,7 +1185,7 @@ class Database:
                              AND due_date IS NOT NULL AND due_date != '' AND due_date < ?
                         THEN 1 ELSE 0 END) AS overdue,
                     SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done_count
-                    FROM todos WHERE is_draft = 0""",
+                    FROM todos WHERE is_draft = 0 AND deleted_at IS NULL""",
                 (today, today),
             )
             row = cur.fetchone()
@@ -1105,3 +1310,326 @@ class Database:
                 (todo_id, notify_date, notify_type, datetime.now().isoformat()),
             )
             return cur.rowcount > 0
+
+    # ==================== 速记 CRUD ====================
+
+    def insert_note(self, content: str, source: str = "manual", source_ref: str = "",
+                    linked_todo_id: int | None = None, pinned: bool = False) -> int:
+        """插入速记，返回 id"""
+        now = datetime.now().isoformat()
+        with self._cursor() as cur:
+            cur.execute(
+                "INSERT INTO notes (content, source, source_ref, linked_todo_id, pinned, "
+                "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (content, source, source_ref, linked_todo_id, int(pinned), now, now),
+            )
+            return cur.lastrowid
+
+    def query_notes(self, limit: int = 100, offset: int = 0,
+                    include_deleted: bool = False) -> list[dict]:
+        """查询速记列表（按 pinned DESC, created_at DESC）"""
+        sql = ("SELECT id, content, source, source_ref, linked_todo_id, pinned, "
+               "created_at, updated_at, deleted_at FROM notes "
+               + ("" if include_deleted else "WHERE deleted_at IS NULL ") +
+               "ORDER BY pinned DESC, created_at DESC LIMIT ? OFFSET ?")
+        with self._cursor() as cur:
+            cur.execute(sql, (limit, offset))
+            rows = cur.fetchall()
+        return [self._note_row_to_dict(r) for r in rows]
+
+    def update_note(self, note_id: int, fields: dict) -> bool:
+        """更新速记字段"""
+        allowed = {"content", "source", "source_ref", "linked_todo_id", "pinned"}
+        sets = []
+        vals = []
+        for k in allowed:
+            if k in fields:
+                v = fields[k]
+                if k == "pinned":
+                    v = int(bool(v)) if v is not None else 0
+                if k == "linked_todo_id":
+                    v = v if v else None
+                sets.append(f"{k} = ?")
+                vals.append(v)
+        if not sets:
+            return False
+        sets.append("updated_at = ?")
+        vals.append(datetime.now().isoformat())
+        vals.append(note_id)
+        with self._cursor() as cur:
+            cur.execute(f"UPDATE notes SET {', '.join(sets)} WHERE id = ?", vals)
+            return cur.rowcount > 0
+
+    def delete_note(self, note_id: int) -> bool:
+        """软删除速记"""
+        with self._cursor() as cur:
+            cur.execute(
+                "UPDATE notes SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL",
+                (datetime.now().isoformat(), datetime.now().isoformat(), note_id),
+            )
+            return cur.rowcount > 0
+
+    def search_notes(self, keyword: str, limit: int = 20) -> list[dict]:
+        """全文搜索速记"""
+        kw = f"%{keyword}%"
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT id, content, source, source_ref, linked_todo_id, pinned, "
+                "created_at, updated_at, deleted_at FROM notes "
+                "WHERE deleted_at IS NULL AND content LIKE ? "
+                "ORDER BY pinned DESC, created_at DESC LIMIT ?",
+                (kw, limit),
+            )
+            rows = cur.fetchall()
+        return [self._note_row_to_dict(r) for r in rows]
+
+    def _note_row_to_dict(self, row) -> dict:
+        return {
+            "id": row[0], "content": row[1] or "", "source": row[2] or "manual",
+            "source_ref": row[3] or "", "linked_todo_id": row[4],
+            "pinned": bool(row[5]), "created_at": row[6] or "",
+            "updated_at": row[7] or "", "deleted_at": row[8] or "",
+        }
+
+    # ==================== 项目 CRUD ====================
+
+    def insert_project(self, name: str, color: str = "#007AFF", icon: str = "📁",
+                       description: str = "") -> int:
+        """插入项目，返回 id"""
+        now = datetime.now().isoformat()
+        with self._cursor() as cur:
+            cur.execute(
+                "INSERT INTO projects (name, color, icon, description, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (name, color, icon, description, now, now),
+            )
+            return cur.lastrowid
+
+    def query_projects(self, include_archived: bool = False) -> list[dict]:
+        """查询项目列表"""
+        sql = ("SELECT id, name, color, icon, description, created_at, updated_at, archived "
+               "FROM projects " + ("" if include_archived else "WHERE archived = 0 ") +
+               "ORDER BY created_at ASC")
+        with self._cursor() as cur:
+            cur.execute(sql)
+            rows = cur.fetchall()
+        return [{
+            "id": r[0], "name": r[1] or "", "color": r[2] or "#007AFF",
+            "icon": r[3] or "📁", "description": r[4] or "",
+            "created_at": r[5] or "", "updated_at": r[6] or "",
+            "archived": bool(r[7]),
+        } for r in rows]
+
+    def update_project(self, project_id: int, fields: dict) -> bool:
+        """更新项目字段"""
+        allowed = {"name", "color", "icon", "description", "archived"}
+        sets = []
+        vals = []
+        for k in allowed:
+            if k in fields:
+                v = fields[k]
+                if k == "archived":
+                    v = int(bool(v)) if v is not None else 0
+                sets.append(f"{k} = ?")
+                vals.append(v)
+        if not sets:
+            return False
+        sets.append("updated_at = ?")
+        vals.append(datetime.now().isoformat())
+        vals.append(project_id)
+        with self._cursor() as cur:
+            cur.execute(f"UPDATE projects SET {', '.join(sets)} WHERE id = ?", vals)
+            return cur.rowcount > 0
+
+    def delete_project(self, project_id: int) -> bool:
+        """归档项目（软删除，不真正删除以保护关联数据）"""
+        return self.update_project(project_id, {"archived": True})
+
+    # ==================== 驾驶舱聚合 ====================
+
+    def query_dashboard_summary(self, today: str) -> dict:
+        """驾驶舱摘要数据：聚合各模块关键指标"""
+        # 今日采集时长 + 片段数
+        today_stats = self.query_app_usage_stats(today)
+        today_seconds = sum(s.get("active_seconds", 0) for s in today_stats)
+        today_segments = len(self.query_all_text_for_date(today))
+
+        # 待办统计
+        todo_stats = {"total": 0, "today_pending": 0, "overdue": 0, "done": 0}
+        try:
+            cur = self._conn.execute(
+                "SELECT status, due_date, is_draft, deleted_at FROM todos"
+            )
+            for row in cur.fetchall():
+                status, due, is_draft, deleted_at = row
+                if deleted_at or is_draft:
+                    continue
+                todo_stats["total"] += 1
+                if status == "done":
+                    todo_stats["done"] += 1
+                elif status in ("pending", "in_progress"):
+                    if due and due < today:
+                        todo_stats["overdue"] += 1
+                    else:
+                        todo_stats["today_pending"] += 1
+        except Exception:
+            pass
+
+        # 速记统计
+        note_count = 0
+        pinned_count = 0
+        try:
+            cur = self._conn.execute(
+                "SELECT COUNT(*), SUM(CASE WHEN pinned=1 THEN 1 ELSE 0 END) "
+                "FROM notes WHERE deleted_at IS NULL"
+            )
+            row = cur.fetchone()
+            if row:
+                note_count = row[0] or 0
+                pinned_count = row[1] or 0
+        except Exception:
+            pass
+
+        # 最近报告
+        recent_reports: list[dict] = []
+        try:
+            cur = self._conn.execute(
+                "SELECT report_date, 'daily' FROM daily_reports "
+                "ORDER BY generated_at DESC LIMIT 3"
+            )
+            for row in cur.fetchall():
+                recent_reports.append({"type": "daily", "date": row[0]})
+            cur = self._conn.execute(
+                "SELECT report_type, period_start FROM period_reports "
+                "ORDER BY generated_at DESC LIMIT 3"
+            )
+            for row in cur.fetchall():
+                recent_reports.append({"type": row[0], "date": row[1]})
+            recent_reports.sort(key=lambda x: x["date"], reverse=True)
+            recent_reports = recent_reports[:5]
+        except Exception:
+            pass
+
+        # 有数据的日期列表（最近7天）
+        available_dates = self.query_available_dates(7)
+
+        return {
+            "today_seconds": round(today_seconds, 1),
+            "today_segments": today_segments,
+            "todo_total": todo_stats["total"],
+            "todo_pending": todo_stats["today_pending"],
+            "todo_overdue": todo_stats["overdue"],
+            "todo_done": todo_stats["done"],
+            "note_count": note_count,
+            "note_pinned": pinned_count,
+            "recent_reports": recent_reports,
+            "available_dates": available_dates,
+        }
+
+    # ==================== 全局搜索 ====================
+
+    def global_search(self, keyword: str, limit: int = 20) -> dict:
+        """全局搜索：跨文本片段、速记、待办、报告"""
+        results: dict[str, list] = {"text_segments": [], "notes": [], "todos": [], "reports": []}
+
+        kw = f"%{keyword}%"
+
+        # 搜索文本片段
+        try:
+            cur = self._conn.execute(
+                "SELECT id, session_id, timestamp, raw_text, source, is_filtered, char_count "
+                "FROM text_segments WHERE raw_text LIKE ? AND is_filtered = 0 "
+                "ORDER BY timestamp DESC LIMIT ?",
+                (kw, limit),
+            )
+            for row in cur.fetchall():
+                results["text_segments"].append({
+                    "id": row[0], "session_id": row[1], "timestamp": row[2],
+                    "text": row[3], "source": row[4], "is_filtered": bool(row[5]),
+                    "char_count": row[6],
+                })
+        except Exception:
+            pass
+
+        # 搜索速记
+        results["notes"] = self.search_notes(keyword, limit)
+
+        # 搜索待办
+        try:
+            cur = self._conn.execute(
+                "SELECT id, title, status, priority, due_date, source_type, source_ref "
+                "FROM todos WHERE deleted_at IS NULL AND title LIKE ? "
+                "ORDER BY created_at DESC LIMIT ?",
+                (kw, limit),
+            )
+            for row in cur.fetchall():
+                results["todos"].append({
+                    "id": row[0], "title": row[1], "status": row[2],
+                    "priority": row[3], "due_date": row[4] or "",
+                    "source_type": row[5] or "manual", "source_ref": row[6] or "",
+                })
+        except Exception:
+            pass
+
+        # 搜索报告（日报 + 周报/月报）
+        try:
+            cur = self._conn.execute(
+                "SELECT report_date, structured_report FROM daily_reports "
+                "WHERE report_date LIKE ? OR structured_report LIKE ? "
+                "ORDER BY report_date DESC LIMIT ?",
+                (kw, kw, limit),
+            )
+            for row in cur.fetchall():
+                results["reports"].append({
+                    "type": "daily", "date": row[0],
+                    "excerpt": (row[1] or "")[:120],
+                })
+            cur = self._conn.execute(
+                "SELECT report_type, period_start, report_label, structured_report "
+                "FROM period_reports WHERE report_label LIKE ? OR structured_report LIKE ? "
+                "ORDER BY period_start DESC LIMIT ?",
+                (kw, kw, limit),
+            )
+            for row in cur.fetchall():
+                results["reports"].append({
+                    "type": row[0], "date": row[1], "label": row[2] or "",
+                    "excerpt": (row[3] or "")[:120],
+                })
+        except Exception:
+            pass
+
+        return results
+
+    # ==================== 周度洞察统计 ====================
+
+    def query_hourly_stats_range(self, start_date: str, end_date: str) -> list[dict]:
+        """按小时聚合活跃时长（用于最佳工作时段分析）"""
+        with self._cursor() as cur:
+            cur.execute(
+                """SELECT CAST(strftime('%H', start_time) AS INTEGER) as hour,
+                    SUM(active_seconds)
+                    FROM sessions
+                    WHERE DATE(start_time) BETWEEN ? AND ? AND is_filtered = 0
+                    GROUP BY hour ORDER BY hour""",
+                (start_date, end_date),
+            )
+            rows = cur.fetchall()
+        return [{"hour": r[0], "active_seconds": r[1] or 0} for r in rows]
+
+    def query_daily_totals_range(self, start_date: str, end_date: str) -> dict[str, float]:
+        """按天聚合活跃时长，返回 {date: active_seconds}"""
+        with self._cursor() as cur:
+            cur.execute(
+                """SELECT DATE(start_time), SUM(active_seconds)
+                    FROM sessions
+                    WHERE DATE(start_time) BETWEEN ? AND ?
+                    GROUP BY DATE(start_time)""",
+                (start_date, end_date),
+            )
+            rows = cur.fetchall()
+        return {r[0]: (r[1] or 0) for r in rows}
+
+    def query_category_stats_range(self, start_date: str, end_date: str) -> list[dict]:
+        """范围内按分类统计（含娱乐占比分析）"""
+        return self.query_category_stats(start_date=start_date, end_date=end_date)
+

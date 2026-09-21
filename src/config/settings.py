@@ -119,6 +119,11 @@ class Settings:
         return self._data["notification"]
 
     @property
+    def ui(self) -> dict:
+        """界面模式配置（mode: auto | embedded | browser）"""
+        return self._data.get("ui", {})
+
+    @property
     def config(self) -> dict:
         """完整配置字典（供扩展模块读取自定义配置段）"""
         return self._data

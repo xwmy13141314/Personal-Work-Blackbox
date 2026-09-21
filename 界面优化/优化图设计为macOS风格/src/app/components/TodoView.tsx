@@ -30,6 +30,8 @@ import {
   FolderOpen,
   GripVertical,
   ExternalLink,
+  Archive,
+  Search,
 } from "lucide-react";
 import type {
   BlackboxApi,
@@ -130,8 +132,15 @@ export function TodoView({
   const [overdueDismissed, setOverdueDismissed] = useState(false);
   const [notice, setNotice] = useState<{ kind: "ok" | "err" | null; msg: string; path?: string }>({ kind: null, msg: "" });
   const [draggingId, setDraggingId] = useState<number | null>(null);
-  // 多维视图（P4-B §4.1）：status=按状态三列（可拖）/ source=按来源四列（只读分组）
-  const [viewMode, setViewMode] = useState<"status" | "source">("status");
+  // 多维视图（P4-B §4.1）：status=按状态三列（可拖）/ source=按来源四列（只读分组）/
+  // archive=删除归档（v4.4：软删除的待办可搜索/恢复/彻底删除）
+  const [viewMode, setViewMode] = useState<"status" | "source" | "archive">("status");
+  // 归档视图状态（v4.4）
+  const [archived, setArchived] = useState<Todo[]>([]);
+  const [archTotal, setArchTotal] = useState(0);
+  const [archKeyword, setArchKeyword] = useState("");
+  const [archLoading, setArchLoading] = useState(false);
+  const [purgeId, setPurgeId] = useState<number | null>(null); // 两步确认：已点「彻底删除」待确认的 id
   // 新建表单
   const [showAdd, setShowAdd] = useState(false);
   const [addTitle, setAddTitle] = useState("");
@@ -347,6 +356,56 @@ export function TodoView({
     if (!api) return;
     await api.delete_todo(id);
     await reload();
+  };
+
+  // ===== 归档视图（v4.4：删除的待办可搜索/恢复/彻底删除） =====
+  const ARCH_PAGE = 50;
+  const loadArchived = async (kw: string, offset: number) => {
+    if (!api) return;
+    setArchLoading(true);
+    try {
+      const r = await api.get_archived_todos(kw.trim(), ARCH_PAGE, offset);
+      if (r.ok) {
+        setArchived((prev) => (offset === 0 ? r.todos : [...prev, ...r.todos]));
+        setArchTotal(r.total);
+      }
+    } finally {
+      setArchLoading(false);
+    }
+  };
+
+  // 切到归档 tab 立即加载；关键词变化防抖 300ms 重新搜
+  useEffect(() => {
+    if (viewMode !== "archive" || !api) return;
+    const timer = setTimeout(() => loadArchived(archKeyword, 0), archKeyword ? 300 : 0);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewMode, archKeyword, api]);
+
+  // 恢复：回看板原位置（sort_order 保留），同步刷新归档列表与看板统计
+  const restoreArchived = async (id: number) => {
+    if (!api) return;
+    const r = await api.restore_todo(id);
+    if (r.ok) {
+      setPurgeId(null);
+      await Promise.all([loadArchived(archKeyword, 0), reload()]);
+      setNotice({ kind: "ok", msg: "已恢复到看板（保留原位置）" });
+    } else {
+      setNotice({ kind: "err", msg: r.error || "恢复失败" });
+    }
+  };
+
+  // 彻底删除（两步确认后执行；归档文件中的历史记录仍保留）
+  const purgeArchived = async (id: number) => {
+    if (!api) return;
+    const r = await api.purge_todo(id);
+    if (r.ok) {
+      setPurgeId(null);
+      await loadArchived(archKeyword, 0);
+      setNotice({ kind: "ok", msg: "已彻底删除该待办（归档文件中的历史记录保留）" });
+    } else {
+      setNotice({ kind: "err", msg: r.error || "彻底删除失败" });
+    }
   };
 
   // 新建
@@ -782,10 +841,10 @@ export function TodoView({
           </div>
         )}
 
-        {/* 视图维度切换（P4-B §4.1） */}
+        {/* 视图维度切换（P4-B §4.1；archive = 删除归档 v4.4） */}
         <div className="flex items-center gap-1 mt-2">
           <span className="text-[11px] text-[var(--wt-text-muted)] mr-1">视图</span>
-          {([["status", "按状态"], ["source", "按来源"]] as const).map(([k, label]) => (
+          {([["status", "按状态"], ["source", "按来源"], ["archive", "归档"]] as const).map(([k, label]) => (
             <button
               key={k}
               onClick={() => setViewMode(k)}
@@ -800,8 +859,21 @@ export function TodoView({
           ))}
         </div>
 
-        {/* 看板 */}
-        {loading ? (
+        {/* 看板 / 删除归档（v4.4） */}
+        {viewMode === "archive" ? (
+          <ArchivePanel
+            items={archived}
+            total={archTotal}
+            loading={archLoading}
+            keyword={archKeyword}
+            onKeyword={setArchKeyword}
+            onLoadMore={() => loadArchived(archKeyword, archived.length)}
+            onRestore={restoreArchived}
+            onPurge={purgeArchived}
+            purgeId={purgeId}
+            onPurgeArm={setPurgeId}
+          />
+        ) : loading ? (
           <p className="text-[12px] text-[var(--wt-text-muted)] py-12 text-center">加载中...</p>
         ) : (
           <DndContext
@@ -867,6 +939,129 @@ export function TodoView({
         )}
       </div>
     </>
+  );
+}
+
+// ==================== 删除归档面板（v4.4：软删除待办的搜索 / 恢复 / 彻底删除） ====================
+
+const ARCH_STATUS_LABEL: Record<string, string> = {
+  pending: "待办",
+  in_progress: "进行中",
+  done: "已完成",
+  cancelled: "已取消",
+};
+
+function ArchivePanel({
+  items,
+  total,
+  loading,
+  keyword,
+  onKeyword,
+  onLoadMore,
+  onRestore,
+  onPurge,
+  purgeId,
+  onPurgeArm,
+}: {
+  items: Todo[];
+  total: number;
+  loading: boolean;
+  keyword: string;
+  onKeyword: (v: string) => void;
+  onLoadMore: () => void;
+  onRestore: (id: number) => void;
+  onPurge: (id: number) => void;
+  purgeId: number | null;
+  onPurgeArm: (id: number | null) => void;
+}) {
+  return (
+    <div
+      className="mt-2 rounded-xl border border-black/[0.07] bg-white/70"
+      style={{ backdropFilter: "blur(8px)" }}
+    >
+      {/* 头部：标题 + 计数 + 搜索框 */}
+      <div className="flex items-center gap-2 px-3.5 py-2.5 border-b border-black/[0.05]">
+        <Archive className="w-3.5 h-3.5 text-[var(--wt-text-muted)] shrink-0" />
+        <p className="text-[12px] font-semibold text-[var(--wt-text)]">删除归档</p>
+        <span className="text-[10px] text-[var(--wt-text-muted)] truncate">
+          共 {total} 条 · 删除的待办可在此找回
+        </span>
+        <div className="flex-1" />
+        <div className="relative shrink-0">
+          <Search className="w-3 h-3 absolute left-2 top-1/2 -translate-y-1/2 text-[var(--wt-text-muted)] pointer-events-none" />
+          <input
+            value={keyword}
+            onChange={(e) => onKeyword(e.target.value)}
+            placeholder="搜索标题 / 备注..."
+            className="pl-6 pr-2 py-1 rounded-full text-[11px] bg-black/[0.06] outline-none w-44 focus:bg-black/[0.09] text-[var(--wt-text)] placeholder:text-[var(--wt-text-muted)]"
+          />
+        </div>
+      </div>
+
+      {/* 列表 */}
+      <div className="p-2 flex flex-col gap-1">
+        {loading && items.length === 0 ? (
+          <p className="text-[12px] text-[var(--wt-text-muted)] py-10 text-center">加载中...</p>
+        ) : items.length === 0 ? (
+          <p className="text-[12px] text-[var(--wt-text-muted)] py-10 text-center">
+            {keyword ? "没有匹配的归档待办" : "暂无归档待办（删除的待办会出现在这里）"}
+          </p>
+        ) : (
+          <>
+            {items.map((t) => (
+              <div key={t.id} className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 hover:bg-black/[0.03]">
+                <span
+                  className="w-1 h-7 rounded-full shrink-0"
+                  style={{ background: PRI_META[t.priority]?.bar ?? "#8e8e93" }}
+                />
+                <div className="flex-1 min-w-0">
+                  <p className="text-[12px] text-[var(--wt-text)] truncate">{t.title}</p>
+                  <p className="text-[10.5px] text-[var(--wt-text-muted)] truncate">
+                    {ARCH_STATUS_LABEL[t.status] ?? t.status}
+                    {t.progress > 0 && t.status !== "done" ? ` · ${t.progress}%` : ""}
+                    {" · " + sourceMeta(t).label}
+                    {` · 删除于 ${(t.deleted_at || "").replace("T", " ").slice(5, 16)}`}
+                  </p>
+                </div>
+                <button
+                  onClick={() => onRestore(t.id)}
+                  className="shrink-0 px-2.5 py-1 rounded-full text-[10.5px] font-medium text-[var(--wt-accent)] bg-[var(--wt-accent-bg)] hover:brightness-95 transition-all"
+                  title="恢复到看板原位置"
+                >
+                  恢复
+                </button>
+                {purgeId === t.id ? (
+                  <button
+                    onClick={() => onPurge(t.id)}
+                    onBlur={() => onPurgeArm(null)}
+                    className="shrink-0 px-2.5 py-1 rounded-full text-[10.5px] font-medium text-white bg-[var(--wt-danger)] hover:brightness-110 transition-all"
+                  >
+                    确认删除
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => onPurgeArm(t.id)}
+                    className="shrink-0 p-1.5 rounded-full text-[var(--wt-text-muted)] hover:text-[var(--wt-danger)] hover:bg-[rgba(255,59,48,0.08)] transition-all"
+                    title="彻底删除（不可恢复；归档文件中的历史记录保留）"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            ))}
+            {items.length < total && (
+              <button
+                onClick={onLoadMore}
+                disabled={loading}
+                className="self-center mt-1 px-3 py-1 rounded-full text-[11px] font-medium text-[var(--wt-text-secondary)] bg-black/[0.06] hover:bg-black/[0.1] disabled:opacity-60 transition-all"
+              >
+                {loading ? "加载中..." : `加载更多（${items.length}/${total}）`}
+              </button>
+            )}
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 

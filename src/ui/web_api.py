@@ -1,4 +1,4 @@
-"""pywebview JS 桥接 API 适配层
+﻿"""pywebview JS 桥接 API 适配层
 
 把 BlackboxEngine 包装成 JSON-able 输入输出的扁平方法，
 供前端经 window.pywebview.api.* 调用。
@@ -16,7 +16,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_APP_VERSION = "4.3.1"
+_APP_VERSION = "5.3.0"
 
 
 class BlackboxAPI:
@@ -434,7 +434,7 @@ class BlackboxAPI:
         return classifier.get_all_categories()
 
     def convert_pinyin(self, text: str) -> dict:
-        """将文本中的拼音转换为汉字（仅展示用，不修改原始数据）"""
+        """将文本中的拼音转换为汉字（离线引擎：DAG→HMM→单字映射，仅展示用）"""
         try:
             from src.processor.pinyin_converter import convert_pinyin_to_hanzi, has_convertible_pinyin
             converted = convert_pinyin_to_hanzi(text)
@@ -447,6 +447,53 @@ class BlackboxAPI:
         except Exception as e:
             logger.exception("拼音转换失败")
             return {"original": text, "converted": text, "has_pinyin": False, "changed": False}
+
+    def convert_pinyin_ai(self, texts: list) -> dict:
+        """LLM 增强拼音转汉字（批量一次调用，异步任务，前端轮询 get_task_status）
+
+        Args:
+            texts: 原始文本数组（会话详情的全部片段）
+
+        Returns:
+            {"task_id": str}；AI 层未初始化时 {"task_id": "", "error": str}
+        """
+        if not isinstance(texts, list) or not texts:
+            return {"task_id": "", "error": "参数必须为非空文本数组"}
+        engine = self._engine
+        rg = getattr(engine, "_report_generator", None)
+        if not rg or not getattr(rg, "_llm", None):
+            return {"task_id": "", "error": "AI 层未初始化，请检查 config.yaml 中的 api_key 配置"}
+
+        with self._lock:
+            self._task_seq += 1
+            task_id = f"task-{self._task_seq}"
+            self._tasks[task_id] = {"status": "pending", "result": None, "error": None}
+        threading.Thread(
+            target=self._convert_pinyin_ai_worker,
+            args=(task_id, [str(t) for t in texts]),
+            daemon=True,
+            name=f"PinyinAI-{task_id}",
+        ).start()
+        return {"task_id": task_id}
+
+    def _convert_pinyin_ai_worker(self, task_id: str, texts: list):
+        """拼音 AI 转换工作线程（失败时前端保留离线引擎结果）"""
+        engine = self._engine
+        try:
+            self._set_task(task_id, status="running")
+            from src.ai.pinyin_ai import convert_texts_llm_sync
+            llm = engine._report_generator._llm
+            results = convert_texts_llm_sync(llm, texts)
+            if not results:
+                self._set_task(
+                    task_id, status="failed",
+                    error="AI 转换失败（LLM 不可用或输出无法解析），已保留离线转换结果",
+                )
+                return
+            self._set_task(task_id, status="done", result={"texts": results})
+        except Exception as e:
+            logger.exception("拼音 AI 转换工作线程异常")
+            self._set_task(task_id, status="failed", error=str(e))
 
     # ==================== 待办事项（提取走异步任务，CRUD 同步） ====================
 
@@ -596,15 +643,76 @@ class BlackboxAPI:
             return {"ok": False, "error": str(e)}
 
     def delete_todo(self, todo_id: int) -> dict:
-        """删除待办"""
+        """删除待办（软删除：主界面不再显示，归档视图可搜索/恢复）
+
+        同时把删除前完整记录追加到 data/exports/todo_archive_*.md + todo_archive.jsonl
+        （append-only 文件归档，恢复/清除都不回改文件）。
+        """
         engine = self._engine
         if not engine._db.is_connected:
             return {"ok": False, "error": "数据库未连接"}
         try:
-            ok = engine._db.delete_todo(int(todo_id))
+            todo_id = int(todo_id)
+            record = engine._db.query_todo(todo_id)
+            if not record:
+                return {"ok": False, "error": "待办不存在"}
+            now = datetime.now().isoformat()
+            ok = engine._db.delete_todo(todo_id, deleted_at=now)
+            if ok:
+                try:
+                    from src.storage.data_exporter import DataExporter
+                    from src.main import get_app_root
+
+                    exporter = DataExporter(engine._db)
+                    exporter.append_todo_archive(
+                        record, get_app_root() / "data" / "exports", deleted_at=now
+                    )
+                except Exception:
+                    # 文件归档失败不阻断删除（数据库软删除已生效）
+                    logger.exception("待办删除归档写文件失败")
             return {"ok": ok}
         except Exception as e:
             logger.exception("删除待办失败")
+            return {"ok": False, "error": str(e)}
+
+    def get_archived_todos(self, keyword: str = "", limit: int = 50, offset: int = 0) -> dict:
+        """查询归档（已删除）待办：keyword 模糊匹配标题/备注，按删除时间降序分页"""
+        engine = self._engine
+        if not engine._db.is_connected:
+            return {"ok": False, "error": "数据库未连接", "todos": [], "total": 0}
+        try:
+            items, total = engine._db.query_archived_todos(
+                keyword=str(keyword or "").strip(),
+                limit=max(1, min(int(limit or 50), 200)),
+                offset=max(0, int(offset or 0)),
+            )
+            return {"ok": True, "todos": [self._todo_to_dict(t) for t in items], "total": total}
+        except Exception as e:
+            logger.exception("查询归档待办失败")
+            return {"ok": False, "error": str(e), "todos": [], "total": 0}
+
+    def restore_todo(self, todo_id: int) -> dict:
+        """恢复归档待办（清空 deleted_at，sort_order 保留 → 回到原看板位置）"""
+        engine = self._engine
+        if not engine._db.is_connected:
+            return {"ok": False, "error": "数据库未连接"}
+        try:
+            ok = engine._db.restore_todo(int(todo_id))
+            return {"ok": ok}
+        except Exception as e:
+            logger.exception("恢复归档待办失败")
+            return {"ok": False, "error": str(e)}
+
+    def purge_todo(self, todo_id: int) -> dict:
+        """彻底删除归档待办（真 DELETE，不可恢复；归档文件中的历史记录保留）"""
+        engine = self._engine
+        if not engine._db.is_connected:
+            return {"ok": False, "error": "数据库未连接"}
+        try:
+            ok = engine._db.purge_todo(int(todo_id))
+            return {"ok": ok}
+        except Exception as e:
+            logger.exception("彻底删除归档待办失败")
             return {"ok": False, "error": str(e)}
 
     def reorder_todos(self, items) -> dict:
@@ -759,6 +867,7 @@ class BlackboxAPI:
             "completed_at": t.completed_at,
             "sort_order": t.sort_order,
             "progress": t.progress,
+            "deleted_at": getattr(t, "deleted_at", "") or "",
         }
 
     # ==================== API 配置（脱敏） ====================
@@ -1265,6 +1374,162 @@ class BlackboxAPI:
         except Exception as e:
             logger.exception("保存同意状态失败")
             return {"ok": False, "error": str(e)}
+
+    # ==================== 速记 CRUD ====================
+
+    def get_notes(self, limit: int = 100, offset: int = 0) -> list[dict]:
+        """获取速记列表"""
+        try:
+            return self._engine._db.query_notes(limit=limit, offset=offset)
+        except Exception as e:
+            logger.exception("查询速记失败")
+            return []
+
+    def add_note(self, content: str, source: str = "manual", source_ref: str = "",
+                 linked_todo_id: int | None = None, pinned: bool = False) -> dict:
+        """新增速记"""
+        try:
+            note_id = self._engine._db.insert_note(
+                content, source, source_ref, linked_todo_id, pinned
+            )
+            return {"ok": True, "id": note_id}
+        except Exception as e:
+            logger.exception("新增速记失败")
+            return {"ok": False, "error": str(e)}
+
+    def update_note(self, note_id: int, fields: dict) -> dict:
+        """更新速记字段"""
+        try:
+            ok = self._engine._db.update_note(note_id, fields)
+            return {"ok": ok}
+        except Exception as e:
+            logger.exception("更新速记失败")
+            return {"ok": False, "error": str(e)}
+
+    def delete_note(self, note_id: int) -> dict:
+        """删除速记（软删除）"""
+        try:
+            ok = self._engine._db.delete_note(note_id)
+            return {"ok": ok}
+        except Exception as e:
+            logger.exception("删除速记失败")
+            return {"ok": False, "error": str(e)}
+
+    # ==================== 项目 CRUD ====================
+
+    def get_projects(self) -> list[dict]:
+        """获取项目列表"""
+        try:
+            return self._engine._db.query_projects(include_archived=False)
+        except Exception as e:
+            logger.exception("查询项目失败")
+            return []
+
+    def add_project(self, name: str, color: str = "#007AFF", icon: str = "📁",
+                    description: str = "") -> dict:
+        """新增项目"""
+        try:
+            pid = self._engine._db.insert_project(name, color, icon, description)
+            return {"ok": True, "id": pid}
+        except Exception as e:
+            logger.exception("新增项目失败")
+            return {"ok": False, "error": str(e)}
+
+    def update_project(self, project_id: int, fields: dict) -> dict:
+        """更新项目字段"""
+        try:
+            ok = self._engine._db.update_project(project_id, fields)
+            return {"ok": ok}
+        except Exception as e:
+            logger.exception("更新项目失败")
+            return {"ok": False, "error": str(e)}
+
+    def delete_project(self, project_id: int) -> dict:
+        """归档项目"""
+        try:
+            ok = self._engine._db.delete_project(project_id)
+            return {"ok": ok}
+        except Exception as e:
+            logger.exception("归档项目失败")
+            return {"ok": False, "error": str(e)}
+
+    # ==================== 驾驶舱聚合 ====================
+
+    def get_dashboard_summary(self) -> dict:
+        """获取驾驶舱摘要数据"""
+        try:
+            today = datetime.now().strftime("%Y-%m-%d")
+            return self._engine._db.query_dashboard_summary(today)
+        except Exception as e:
+            logger.exception("获取驾驶舱摘要失败")
+            return {"today_seconds": 0, "today_segments": 0, "todo_total": 0,
+                    "todo_pending": 0, "todo_overdue": 0, "todo_done": 0,
+                    "note_count": 0, "note_pinned": 0, "recent_reports": [],
+                    "available_dates": []}
+
+    # ==================== 周度洞察（v5.1） ====================
+
+    def get_weekly_insights(self, date: str | None = None) -> dict:
+        """读取本周洞察缓存（无缓存时返回空，前端再触发生成）"""
+        try:
+            rg = self._engine._report_generator
+            if not rg:
+                return {"ok": False, "error": "AI 层未初始化", "insights": []}
+            result = rg.get_weekly_insights(date)
+            if not result:
+                return {"ok": True, "cached": False, "insights": []}
+            result["cached"] = True
+            return result
+        except Exception as e:
+            logger.exception("读取周度洞察失败")
+            return {"ok": False, "error": str(e), "insights": []}
+
+    def generate_weekly_insights(self, date: str | None = None) -> dict:
+        """异步生成周度洞察：立即返回 task_id，前端轮询 get_task_status"""
+        with self._lock:
+            self._task_seq += 1
+            task_id = f"task-{self._task_seq}"
+            self._tasks[task_id] = {"status": "pending", "result": None, "error": None}
+        threading.Thread(
+            target=self._gen_insights_worker,
+            args=(task_id, date),
+            daemon=True,
+            name=f"GenInsights-{task_id}",
+        ).start()
+        return {"task_id": task_id}
+
+    def _gen_insights_worker(self, task_id: str, date: str | None):
+        """洞察生成工作线程（LLM 优先，本地统计兜底）"""
+        engine = self._engine
+        try:
+            self._set_task(task_id, status="running")
+            rg = engine._report_generator
+            if not rg:
+                self._set_task(task_id, status="failed", error="AI 层未初始化，请检查 config.yaml 中的 api_key 配置")
+                return
+
+            goal_minutes = getattr(engine._focus_mode, "_daily_goal_minutes", 480)
+            result = rg.generate_weekly_insights_sync(date, goal_minutes)
+            if not result:
+                self._set_task(task_id, status="failed", error="本周与上周均无采集数据，无法生成洞察")
+                return
+            self._set_task(task_id, status="done", result={"insights_data": result})
+        except Exception as e:
+            logger.exception("周度洞察工作线程异常")
+            self._set_task(task_id, status="failed", error=str(e))
+
+    # ==================== 全局搜索 ====================
+
+    def global_search(self, keyword: str, limit: int = 20) -> dict:
+        """全局搜索：跨文本片段、速记、待办、报告"""
+        empty = {"text_segments": [], "notes": [], "todos": [], "reports": []}
+        try:
+            if not keyword.strip():
+                return empty
+            return self._engine._db.global_search(keyword.strip(), limit)
+        except Exception as e:
+            logger.exception("全局搜索失败")
+            return empty
 
     def shutdown(self) -> None:
         try:

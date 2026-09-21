@@ -1,8 +1,11 @@
+import { fileURLToPath } from 'url'
 import { defineConfig } from 'vite'
 import path from 'path'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 
+// 兼容 bundle / runner 两种 configLoader（runner 模式下 __dirname 未定义）
+const projectDir = path.dirname(fileURLToPath(import.meta.url))
 
 function figmaAssetResolver() {
   return {
@@ -10,7 +13,7 @@ function figmaAssetResolver() {
     resolveId(id) {
       if (id.startsWith('figma:asset/')) {
         const filename = id.replace('figma:asset/', '')
-        return path.resolve(__dirname, 'src/assets', filename)
+        return path.resolve(projectDir, 'src/assets', filename)
       }
     },
   }
@@ -29,11 +32,11 @@ export default defineConfig({
   resolve: {
     alias: {
       // Alias @ to the src directory
-      '@': path.resolve(__dirname, './src'),
+      '@': path.resolve(projectDir, './src'),
     },
   },
   build: {
-    outDir: path.resolve(__dirname, '../../web_frontend'),
+    outDir: path.resolve(projectDir, '../../web_frontend'),
     emptyOutDir: true,
   },
   // File types to support raw imports. Never add .css, .tsx, or .ts files to this.

@@ -13,6 +13,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.wintypes
 import logging
+import queue
 import threading
 import time
 from enum import Enum, auto
@@ -193,6 +194,28 @@ def _get_ime_result_string(hwnd: int) -> str | None:
         return None
 
 
+def _get_ime_comp_string(hwnd: int) -> str | None:
+    """获取 IME 当前组合串（未上屏的拼音/候选文本）"""
+    if not _HAS_WIN_API:
+        return None
+    try:
+        imc = _imm32.ImmGetContext(hwnd)
+        if not imc:
+            return None
+        try:
+            comp_len = _imm32.ImmGetCompositionStringW(imc, GCS_COMPSTR, None, 0)
+            if comp_len <= 0:
+                return None
+            buf = ctypes.create_string_buffer(comp_len)
+            _imm32.ImmGetCompositionStringW(imc, GCS_COMPSTR, buf, comp_len)
+            comp = buf.raw[:comp_len].decode("utf-16-le", errors="ignore")
+            return comp if comp else None
+        finally:
+            _imm32.ImmReleaseContext(hwnd, imc)
+    except Exception:
+        return None
+
+
 # ==================== 虚拟键码映射 ====================
 
 _VK_TO_KEY = {
@@ -213,6 +236,18 @@ _VK_TO_KEY = {
 _CTRL_VKS = {VK_CONTROL, VK_LCONTROL, VK_RCONTROL}
 _ALT_VKS = {VK_MENU, VK_LMENU, VK_RMENU}
 _SHIFT_VKS = {VK_SHIFT, VK_LSHIFT, VK_RSHIFT}
+
+# IME 确认/候选键：按下后延时轮询组合结果
+# Enter/Space/Tab/Backspace/Delete = 确认键；数字键（主键盘+小键盘）= 候选选择
+_IME_CONFIRM_VKS = frozenset(
+    [VK_RETURN, VK_SPACE, VK_TAB, VK_BACK, VK_DELETE]
+    + list(range(0x30, 0x3A))   # 主键盘 0-9
+    + list(range(0x60, 0x6A))   # 小键盘 0-9
+)
+
+# 按键后等待输入法处理完成的延时（秒）
+# IME 组合结果在应用处理按键后才可读取，钩子触发时直接读会拿到旧值
+_IME_SETTLE_SECONDS = 0.035
 
 
 def _vk_to_char(vk: int, shift_pressed: bool = False) -> str | None:
@@ -358,15 +393,22 @@ class KeyboardHook:
         self,
         on_event: Callable[[KeyEvent], None],
         capture_hotkeys: bool = True,
+        on_ime_text: Callable[[str], None] | None = None,
     ):
         self._on_event = on_event
         self._capture_hotkeys = capture_hotkeys
+        # IME 上屏文本额外回调（供 UIA 采集器触发即时快照）
+        self._on_ime_text = on_ime_text
 
         self._kb_hook = None
         self._ime_hook = None
         self._hook_thread: threading.Thread | None = None
         self._watchdog_thread: threading.Thread | None = None
+        self._dispatch_thread: threading.Thread | None = None
         self._thread_id: int | None = None
+
+        # 事件队列：钩子回调只入队（微秒级），耗时处理全部在消费线程
+        self._queue: queue.Queue = queue.Queue(maxsize=10000)
 
         self._ctrl_pressed = False
         self._alt_pressed = False
@@ -402,6 +444,12 @@ class KeyboardHook:
             target=self._watchdog_loop, daemon=True, name="KbHookWatchdog",
         )
         self._watchdog_thread.start()
+
+        # 启动消费线程：处理队列事件（IME 轮询/字符转换/事件分发）
+        self._dispatch_thread = threading.Thread(
+            target=self._dispatch_loop, daemon=True, name="KbDispatch",
+        )
+        self._dispatch_thread.start()
 
         # 等待线程安装完成（最多2秒）
         for _ in range(20):
@@ -517,36 +565,46 @@ class KeyboardHook:
         if self._hook_thread:
             self._hook_thread.join(timeout=2)
 
+        # 唤醒消费线程使其尽快退出
+        if self._dispatch_thread:
+            self._dispatch_thread.join(timeout=1)
+
         logger.info("KeyboardHook 已停止 (events=%d)", self._event_count)
 
     def _kbd_hook_callback(self, nCode, wParam, lParam):
-        """WH_KEYBOARD_LL 回调"""
+        """WH_KEYBOARD_LL 回调 — 只做最小解析与入队
+
+        回调内禁止任何耗时操作（IME 轮询/日志/事件分发）：
+        回调超时会被系统静默跳过事件（丢键根因），全部移到消费线程。
+        """
         if nCode == HC_ACTION:
             try:
-                if wParam in (WM_KEYDOWN, WM_SYSKEYDOWN):
+                if wParam in (WM_KEYDOWN, WM_SYSKEYDOWN, WM_KEYUP, WM_SYSKEYUP):
                     kb = KBDLLHOOKSTRUCT.from_address(lParam)
-                    vk = kb.vkCode
-
                     # 忽略注入事件（SendInput 等）
-                    if kb.flags & LLKHF_INJECTED:
-                        return _user32.CallNextHookEx(self._kb_hook, nCode, wParam, lParam)
-
-                    self._event_count += 1
-                    if not self._first_event_logged:
-                        self._first_event_logged = True
-                        logger.info("首次按键事件已收到: vk=0x%02X", vk)
-
-                    self._process_keydown(vk)
-
-                elif wParam in (WM_KEYUP, WM_SYSKEYUP):
-                    kb = KBDLLHOOKSTRUCT.from_address(lParam)
-                    vk = kb.vkCode
-                    self._process_keyup(vk)
-
+                    if not (kb.flags & LLKHF_INJECTED):
+                        try:
+                            self._queue.put_nowait((wParam, kb.vkCode, time.time()))
+                        except queue.Full:
+                            pass  # 消费端严重滞后时丢弃事件，保住钩子响应速度
             except Exception:
-                logger.exception("键盘钩子回调异常")
-
+                pass  # 回调内不能抛异常也不能记日志（记日志本身耗时会导致丢键）
         return _user32.CallNextHookEx(self._kb_hook, nCode, wParam, lParam)
+
+    def _dispatch_loop(self):
+        """消费线程主循环：从队列取事件，执行全部耗时处理"""
+        while not self._stop_flag:
+            try:
+                wparam, vk, ts = self._queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            try:
+                if wparam in (WM_KEYDOWN, WM_SYSKEYDOWN):
+                    self._process_keydown(vk, ts)
+                else:
+                    self._process_keyup(vk)
+            except Exception:
+                logger.exception("键盘事件分发异常")
 
     def _ime_getmsg_callback(self, nCode, wParam, lParam):
         """WH_GETMESSAGE 回调（IME 组合结果）"""
@@ -567,8 +625,8 @@ class KeyboardHook:
                 logger.debug("IME 消息钩子回调异常", exc_info=True)
         return _user32.CallNextHookEx(self._ime_hook, nCode, wParam, lParam)
 
-    def _process_keydown(self, vk: int):
-        """处理按键按下"""
+    def _process_keydown(self, vk: int, ts: float):
+        """处理按键按下（消费线程，可安全执行 IME 轮询等耗时操作）"""
         # 更新修饰键状态
         if vk in _CTRL_VKS:
             self._ctrl_pressed = True
@@ -580,11 +638,17 @@ class KeyboardHook:
             self._shift_pressed = True
             return
 
-        # IME 确认键：Enter/Space/Tab/Backspace 可能确认了 IME 候选词
-        # 直接从前台窗口的 IME 上下文获取组合结果
-        # （WH_GETMESSAGE 钩子无法收到其他线程的 IME 消息，只能主动轮询）
-        if vk in (VK_RETURN, VK_SPACE, VK_TAB, VK_BACK, VK_DELETE):
-            self._check_and_emit_ime_result()
+        self._event_count += 1
+        if not self._first_event_logged:
+            self._first_event_logged = True
+            logger.info("首次按键事件已处理: vk=0x%02X", vk)
+
+        # IME 确认/候选键：延时轮询组合结果
+        # （WH_GETMESSAGE 钩子无法收到其他线程的 IME 消息，只能主动轮询；
+        #   数字键 0-9 用于候选选择，同样会触发上屏）
+        if vk in _IME_CONFIRM_VKS:
+            if self._handle_ime_confirm(vk, ts):
+                return  # 数字被 IME 消费（选字），不作为普通字符
 
         # 特殊键映射
         if vk in _VK_TO_KEY:
@@ -624,31 +688,112 @@ class KeyboardHook:
         elif vk in _SHIFT_VKS:
             self._shift_pressed = False
 
-    def _check_and_emit_ime_result(self):
-        """兜底：检查 IME 组合结果"""
-        try:
-            hwnd = _user32.GetForegroundWindow()
-            if not hwnd:
-                return
-            result = _get_ime_result_string(hwnd)
-            if result:
-                logger.info("IME 结果检测到: %r", result[:30])
-            self._on_ime_result_from_hook(result)
-        except Exception:
-            pass
+    def _handle_ime_confirm(self, vk: int, ts: float) -> bool:
+        """处理 IME 确认/候选键：延时轮询组合结果
 
-    def _on_ime_result_from_hook(self, result: str | None):
-        """处理 IME 结果（去重后发射事件）"""
-        if not result:
-            return
-        if result != self._last_ime_result:
-            self._last_ime_result = result
-            logger.info("IME 文本已发射: %r", result[:30])
-            event = KeyEvent(
-                KeyEventType.PRESS, key=None, char=result,
-                is_ime_composition=True,
-            )
-            self._on_event(event)
+        Returns:
+            True 表示该键被 IME 消费（数字选字），调用方应跳过普通字符处理
+        """
+        is_digit = (0x30 <= vk <= 0x39) or (0x60 <= vk <= 0x69)
+        committed = self._poll_ime_result(ts)
+        # 数字键被 IME 消费（选字）→ 不作为普通数字字符
+        return is_digit and committed
+
+    def _poll_ime_result(self, ts: float) -> bool:
+        """延时轮询 IME 组合结果
+
+        组合结果在应用处理按键后才可读取，需等待按键时间戳 + 延时后读取。
+        新提交判定：结果文本变化，或组合串从有到无（重复上屏相同文本）。
+
+        v1.1 P0-0 修复：用 GetGUIThreadInfo().hwndFocus 替代 GetForegroundWindow()
+        —— 跨进程/嵌套窗口场景下,前台顶层窗口不一定是真正接收输入的窗口
+        (WPS 表格实况: 前台 cls=XLMAIN 焦点 cls=EXCEL7, 跨 wps.exe/et.exe 进程)
+        """
+        try:
+            if not _HAS_WIN_API:
+                return False
+            hwnd = self._resolve_ime_hwnd()
+            if not hwnd:
+                return False
+
+            comp_before = _get_ime_comp_string(hwnd)
+
+            # 等待输入法处理该按键
+            delay = (ts + _IME_SETTLE_SECONDS) - time.time()
+            if delay > 0:
+                time.sleep(delay)
+
+            result = _get_ime_result_string(hwnd)
+            if not result:
+                return False
+
+            if result == self._last_ime_result:
+                # 结果未变：仅当组合串从有到无（再次上屏相同文本）才视为新提交
+                comp_after = _get_ime_comp_string(hwnd)
+                if not (comp_before and not comp_after):
+                    return False
+
+            self._emit_ime_text(result)
+            return True
+        except Exception:
+            logger.debug("IME 轮询异常", exc_info=True)
+            return False
+
+    @staticmethod
+    def _resolve_ime_hwnd() -> int:
+        """解析用于 IME 轮询的窗口句柄（v1.1 P0-0 修复核心）
+
+        优先用 GetGUIThreadInfo().hwndFocus（真正接收输入的控件,可能跨进程），
+        失败/空时降级为 GetForegroundWindow()。
+
+        注意：WPS 表格实测表明这是关键修复——前台 XLMAIN(wps.exe) 与
+        焦点 EXCEL7(et.exe) 跨进程,只有后者能拿到 IME 上下文。
+        """
+        try:
+            fg = _user32.GetForegroundWindow()
+            if not fg:
+                return 0
+            tid = _user32.GetWindowThreadProcessId(fg, None)
+            if not tid:
+                return fg
+            # 不重复创建 GUITHREADINFO,内联最小结构
+            class _GTI(ctypes.Structure):
+                _fields_ = [
+                    ("cbSize", ctypes.wintypes.DWORD),
+                    ("flags", ctypes.wintypes.DWORD),
+                    ("hwndActive", ctypes.wintypes.HWND),
+                    ("hwndFocus", ctypes.wintypes.HWND),
+                    ("hwndCapture", ctypes.wintypes.HWND),
+                    ("hwndMenuOwner", ctypes.wintypes.HWND),
+                    ("hwndMoveSize", ctypes.wintypes.HWND),
+                    ("hwndCaret", ctypes.wintypes.HWND),
+                    ("rcCaret", ctypes.wintypes.RECT),
+                ]
+            gti = _GTI()
+            gti.cbSize = ctypes.sizeof(_GTI)
+            if _user32.GetGUIThreadInfo(tid, ctypes.byref(gti)) and gti.hwndFocus:
+                return gti.hwndFocus
+        except Exception:
+            logger.debug("GetGUIThreadInfo 失败,降级 GetForegroundWindow", exc_info=True)
+        return _user32.GetForegroundWindow() or 0
+
+    def _emit_ime_text(self, result: str) -> bool:
+        """发射 IME 上屏文本事件（去重）"""
+        if not result or result == self._last_ime_result:
+            return False
+        self._last_ime_result = result
+        logger.info("IME 上屏文本已捕获: %r", result[:30])
+        event = KeyEvent(
+            KeyEventType.PRESS, key=None, char=result,
+            is_ime_composition=True,
+        )
+        self._on_event(event)
+        if self._on_ime_text:
+            try:
+                self._on_ime_text(result)
+            except Exception:
+                logger.exception("on_ime_text 回调异常")
+        return True
 
     @property
     def is_ctrl_held(self) -> bool:
