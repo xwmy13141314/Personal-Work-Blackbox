@@ -17,7 +17,8 @@ blackbox.log
 config/config.yaml
 config/config.local.yaml
 config/.secrets.yaml
-config/config.yaml.bak
+# 配置备份与自动生成副本（如 config.yaml.bak / config.yaml.autogen-*）
+config/config.yaml.*
 # 环境变量文件（可能含 API Key，禁止上传）
 .env
 .env.*

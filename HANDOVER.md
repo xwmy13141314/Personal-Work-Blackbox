@@ -16,7 +16,7 @@
 
 ## 3. 已完成进展
 
-**本会话（2026-09-23）v5.4.0 速记标签化 + 洞察收件箱双写（测试 524 passed / 0 failed）：**
+**本会话（2026-09-23）v5.4.0 速记标签化 + 洞察收件箱双写 + 旧库升级搬移（测试 539 passed / 0 failed）：**
 - [x] 速记标签：`notes` 增加 `tags` 列（含旧库迁移）；标签归一化（中英文逗号、去重）；标签云（次数降序）；按标签精确筛选（逗号包裹匹配）；搜索命中内容 + 标签
 - [x] 洞察收件箱双写：`src/storage/insight_capture.py`（`save_to_inbox` / `normalize_tags` / `inbox_status` / `count_inbox_files`）；速记保存时同步落盘 Markdown（frontmatter `type/created/tags/source`，文件名 `YYYY-MM-DD_HHMM.md`，同分钟加序号）
 - [x] 收件箱配置面板：目录写入 `config.yaml` 的 `insight.inbox_dir`，**热生效**（写文件 + 更新引擎内存配置 + 重载单例）；显示连通性/可写性/待处理文件数
@@ -57,7 +57,7 @@
 - 技术栈：Python 3.13（ctypes WH_KEYBOARD_LL / pywebview 6.2.1 / UIA 子进程 + WPS COM）+ React18/TS/Tailwind4/Vite6 + SQLite(WAL) + OpenAI 兼容 LLM（默认智谱 GLM）
 - 运行：`python -m src.main --gui`；打包：先关 WorkTrace.exe → `pyinstaller --noconfirm blackbox.spec`；前端：`cd 界面优化/优化图设计为macOS风格 && npm run build:desktop`（→ `web_frontend/`）
 - 数据库（唯一）：`data/blackbox.db`（项目根）
-- 测试：`python -m pytest -q`（**504 passed**，沙箱内加 `-p no:cacheprovider` + `PYTHONDONTWRITEBYTECODE=1`）
+- 测试：`python -m pytest -q`（**539 passed**，沙箱内加 `-p no:cacheprovider` + `PYTHONDONTWRITEBYTECODE=1`）
 
 ## 6. 已知的坑 & 注意事项
 - **git 仓库位置**：`.git` 在 `轻量化键盘记录工具\`；父级非 git 仓库，环境检测误报勿信
@@ -76,8 +76,10 @@
 
 ## 7. 如何续上
 1. 读本文件 + `CLAUDE.md`
-2. **当前状态**：v5.3.0 开发完成（504 passed）；本地 `.git` 损坏待 fetch 修复；**v4.4.0~v5.3.0 全部提交未推送**；上传脚本 `git-upload-v5.3.0.bat` 已备好
-3. 验证路径：双击 `启动.bat` → 中文输入查上屏文本（UIA/COM）→ 活动页「智能识别」/「AI 增强」→ 隐私模式跳过增强
-4. 确认基线：`python -m pytest -q`（应 504 passed）
-5. 若要发版：上传后 `git tag v5.3.0 && git push --tags` → `gh release create v5.3.0 dist/WorkTrace.exe`（先重打包）
-6. 采集链路相关改 `src/collector/` + `src/main.py`；前端拼音/AI 增强改 `ActivityView.tsx`；UI 配色只动 `theme.css`
+2. **当前状态**：**v5.4.0 已推送 GitHub 并发布 Release**（commit `8717680`，含合并并行线 + 词典修复 + 旧库升级搬移）。仓库根 = `D:\AI 学习\AI coding\职迹\`，`.git` 健康、历史完整
+3. 验证路径：启动 `dist\WorkTrace.exe` → 左导航「速记」查标签/标签云/四指标/「洞察收件箱」面板 → Ctrl+Alt+I 呼出速记 → 驾驶舱/报告页「洞察」(AI 周度洞察)
+4. 确认基线：`python -m pytest -q`（应 **539 passed / 0 failed**）
+5. 发版流程：`git tag -a vX.Y.Z -m "..."` → `git push origin vX.Y.Z` → `gh release create vX.Y.Z dist/WorkTrace.exe --title ... --notes-file ...`（先 `pyinstaller --noconfirm blackbox.spec` 重打包）
+6. 采集链路相关改 `src/collector/` + `src/main.py`；前端拼音/AI 增强改 `ActivityView.tsx`；速记/标签改 `QuickNoteView.tsx` + `src/storage/database.py`；UI 配色只动 `theme.css`
+7. ⚠️ 推送凭据：无 tty 时用 `git -c credential.helper= -c credential.helper="!C:/Users/Gotron/.agent-reach/tools/gh/bin/gh auth git-credential" push origin main`
+8. ⚠️ 数据位置：exe 在项目内 `dist/` 时数据落在**项目根** `data/`；旧的 `dist/dist/` 已停用，别再启动以免「双库」分叉

@@ -331,6 +331,40 @@ class Database:
             )
         except Exception as e:
             logger.debug("todos deleted_at 索引跳过: %s", e)
+        # 旧版「洞察速记」表数据搬移（v5.4 合并并行开发线）：
+        # v4.5 独立开发线的速记存在 `insights` 表，v5.x 官方速记在 `notes` 表。
+        # 升级后若不搬移，旧记录在新速记页会「消失」。仅在 notes 为空时执行一次，
+        # 原 insights 表保留原地不改（可随时回查）。
+        try:
+            exists = self._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='insights'"
+            ).fetchone()
+            if exists:
+                notes_n = self._conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
+                if not notes_n:
+                    cols = {row[1] for row in self._conn.execute(
+                        "PRAGMA table_info(insights)"
+                    ).fetchall()}
+                    if "content" in cols:
+                        tags_expr = "COALESCE(tags, '')" if "tags" in cols else "''"
+                        source_expr = ("COALESCE(source, 'manual')"
+                                       if "source" in cols else "'manual'")
+                        created_expr = ("COALESCE(created_at, '')"
+                                        if "created_at" in cols else "''")
+                        updated_expr = ("COALESCE(updated_at, '')"
+                                        if "updated_at" in cols else "''")
+                        cur = self._conn.execute(
+                            "INSERT INTO notes (content, tags, source, source_ref, "
+                            "linked_todo_id, pinned, created_at, updated_at, deleted_at) "
+                            f"SELECT content, {tags_expr}, {source_expr}, '', NULL, 0, "
+                            f"{created_expr}, {updated_expr}, NULL FROM insights"
+                        )
+                        if cur.rowcount:
+                            logger.info(
+                                "数据库迁移: insights → notes 搬移 %d 条旧速记", cur.rowcount
+                            )
+        except Exception as e:
+            logger.debug("insights → notes 搬移跳过: %s", e)
         self._conn.commit()
 
     def migrate_to_encrypted(self, encryption_key: str) -> bool:

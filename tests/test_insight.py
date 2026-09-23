@@ -6,7 +6,7 @@
 3. web_api：速记双写（入库 + 落盘）、收件箱配置保存与热生效
 """
 
-import json
+import sqlite3
 from datetime import date, timedelta
 
 import pytest
@@ -333,3 +333,109 @@ class TestNoteAPI:
         r = api.save_insight_config("")
         assert r["ok"] is True and r["inbox_dir"] == ""
         assert api.add_note("仅入库")["inbox_path"] == ""
+
+
+# ==================== 旧库升级：insights → notes 自动搬移 ====================
+
+class TestLegacyInsightsMigration:
+    """v4.5 并行开发线的 `insights` 表在 v5.4 合并后必须能自动搬到 `notes`，
+    否则老用户升级后旧速记在新速记页「消失」。"""
+
+    LEGACY_DDL = (
+        "CREATE TABLE IF NOT EXISTS insights ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " content TEXT, tags TEXT, source TEXT,"
+        " inbox_path TEXT, created_at TEXT, updated_at TEXT)"
+    )
+
+    def _make_legacy_db(self, path, rows):
+        con = sqlite3.connect(str(path))
+        con.execute(self.LEGACY_DDL)
+        for r in rows:
+            con.execute(
+                "INSERT INTO insights (content, tags, source, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                r,
+            )
+        con.commit()
+        con.close()
+
+    def _open(self, path):
+        db = Database(path)
+        db.initialize()
+        return db
+
+    def test_legacy_rows_migrated(self, tmp_path):
+        p = tmp_path / "legacy.db"
+        self._make_legacy_db(p, [
+            ("旧洞察一", "竞品", "hotkey", "2026-09-20T10:00:00", "2026-09-20T10:00:00"),
+            ("旧洞察二", "", "manual", "2026-09-21T11:30:00", "2026-09-21T11:30:00"),
+        ])
+        db = self._open(p)
+        try:
+            rows = db.query_notes()
+            assert len(rows) == 2
+            assert sorted(r["content"] for r in rows) == ["旧洞察一", "旧洞察二"]
+            got = {r["content"]: r for r in rows}
+            assert got["旧洞察一"]["tags"] == "竞品"
+            assert got["旧洞察一"]["source"] == "hotkey"
+            assert got["旧洞察一"]["created_at"] == "2026-09-20T10:00:00"
+        finally:
+            db.close()
+
+    def test_migrated_rows_are_searchable_and_counted(self, tmp_path):
+        p = tmp_path / "legacy2.db"
+        self._make_legacy_db(p, [
+            ("供应链比设计更卡节奏", "复盘,供应链", "manual",
+             "2026-09-21T09:00:00", "2026-09-21T09:00:00"),
+        ])
+        db = self._open(p)
+        try:
+            assert len(db.search_notes("供应链")) == 1
+            assert {t["tag"] for t in db.list_note_tags()} == {"复盘", "供应链"}
+            assert db.get_note_stats()["total"] == 1
+        finally:
+            db.close()
+
+    def test_no_duplicate_when_notes_already_has_data(self, tmp_path):
+        """notes 非空则不动（幂等，避免每次启动重复导入）"""
+        p = tmp_path / "legacy3.db"
+        self._make_legacy_db(p, [
+            ("旧洞察", "", "manual", "2026-09-20T10:00:00", "2026-09-20T10:00:00"),
+        ])
+        db = self._open(p)
+        try:
+            assert len(db.query_notes()) == 1
+        finally:
+            db.close()
+        # 第二次打开：notes 已有 1 条 → 不重复导入
+        db2 = self._open(p)
+        try:
+            assert len(db2.query_notes()) == 1
+        finally:
+            db2.close()
+
+    def test_legacy_table_without_tags_column(self, tmp_path):
+        """旧表没有 tags 列也不能报错（用空标签兜底）"""
+        p = tmp_path / "legacy4.db"
+        con = sqlite3.connect(str(p))
+        con.execute(
+            "CREATE TABLE IF NOT EXISTS insights ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT, created_at TEXT)"
+        )
+        con.execute(
+            "INSERT INTO insights (content, created_at) VALUES (?, ?)",
+            ("无标签旧洞察", "2026-09-20T10:00:00"),
+        )
+        con.commit()
+        con.close()
+
+        db = self._open(p)
+        try:
+            rows = db.query_notes()
+            assert len(rows) == 1
+            assert rows[0]["content"] == "无标签旧洞察"
+            assert rows[0]["tags"] == ""
+            assert rows[0]["source"] == "manual"
+        finally:
+            db.close()

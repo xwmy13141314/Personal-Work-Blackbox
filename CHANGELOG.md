@@ -22,15 +22,19 @@
 - **弃用** 本地前端 `InsightView.tsx` 独立页与 `App/TodoView/utils/pywebview` 的 v4.3.1 旧改动 —— 统一在 v5.3 的速记页（`QuickNoteView`）与既有归档视图上扩展
 - **弃用** 本地 `keyboard_hook.py` 的死代码清理 —— v5.3.0 已整文件重写（C 系列输入准确性修复），本地改动基于旧版
 
+### 升级说明（从 v4.5 并行开发线 / 旧版库升级）
+- **旧速记自动搬移**：v4.5 独立开发线的速记存放在 `insights` 表，v5.x 官方速记在 `notes` 表。启动时若检测到旧 `insights` 表且 `notes` 为空，会自动搬移一次（幂等，不会重复导入；旧表保留原地可随时回查；缺 `tags`/`source` 列的旧表也能兼容）
+- **数据与配置目录**：打包 exe 若位于项目内 `dist/`（即上级目录存在 `src/`，判定为开发场景），`data/`、`config/` 落在**项目根**并与源码运行共用一套；独立分发的 exe 则就近存放。升级时请确认新旧版本指向的是同一份数据，避免「双库」分叉
+
 ### 修改文件
-- 后端：`src/storage/insight_capture.py`（新增）、`src/storage/database.py`（notes.tags 列 + 迁移 + CRUD + `list_note_tags` + `get_note_stats`）、`src/storage/models.py`（NoteRecord.tags）、`src/ui/web_api.py`（add_note 双写 + get_notes(tag) + get_note_tags/get_note_stats/get_insight_config/save_insight_config，版本 5.4.0）、`src/ui/hotkey_manager.py`（+Ctrl+Alt+I）、`src/ui/web_ui.py`（Web UI 模式快捷键接线）、`src/config/defaults.py`（+insight.inbox_dir）
+- 后端：`src/storage/insight_capture.py`（新增）、`src/storage/database.py`（notes.tags 列 + 迁移 + CRUD + `list_note_tags` + `get_note_stats` + 旧 `insights` 表自动搬移）、`src/storage/models.py`（NoteRecord.tags）、`src/ui/web_api.py`（add_note 双写 + get_notes(tag) + get_note_tags/get_note_stats/get_insight_config/save_insight_config，版本 5.4.0）、`src/ui/hotkey_manager.py`（+Ctrl+Alt+I）、`src/ui/web_ui.py`（Web UI 模式快捷键接线）、`src/config/defaults.py`（+insight.inbox_dir）
 - 前端：`QuickNoteView.tsx`（标签输入/标签云/标签筛选/指标/收件箱配置面板）、`App.tsx`（Ctrl+Alt+I 事件 → 跳转速记页）、`pywebview.ts`（Note.tags + 4 个新 API + mock）、`AboutView.tsx`（v5.4.0）
 - 配置与打包：`config/config.example.yaml`（insight 段）、`blackbox.spec`（+src.storage.insight_capture）
 - 词典：`src/libs/Pinyin2Hanzi/data/*.json.gz`（6 个文件，补回上游遗漏）
-- 测试：`tests/test_insight.py`（新增：收件箱落盘/标签归一/标签精确筛选/标签云/统计/状态探测/API 双写/配置热生效）
+- 测试：`tests/test_insight.py`（新增：收件箱落盘/标签归一/标签精确筛选/标签云/统计/状态探测/API 双写/配置热生效/旧库 insights→notes 升级搬移）
 
 ### 测试
-- 全量 **524 passed / 0 failed / 11 skipped**（v5.3.0 基线为 485 passed + 8 failed；其中 8 个为拼音词典缺失所致，已修复；新增洞察标签测试 31 个）
+- 全量 **539 passed / 0 failed**（本机全量；v5.3.0 基线为 485 passed + 8 failed，其中 8 个为拼音词典缺失所致已修复；新增测试 39 个）
 
 
 ## v5.3.0 - 2026-09-15 — 输入采集准确性：键盘钩子修复（C 系列）+ UIA/COM 真实上屏文本（B 系列）
