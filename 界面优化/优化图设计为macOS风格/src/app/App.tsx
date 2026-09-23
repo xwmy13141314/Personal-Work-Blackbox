@@ -358,6 +358,17 @@ export default function App() {
     if (view !== "quicknote") setNoteKeyword("");
   }, [view]);
 
+  // Ctrl+Alt+I 全局快捷键（v5.4）：后端唤起窗口并派发事件 → 跳转速记页
+  // （输入框聚焦由 QuickNoteView 监听同一事件完成）
+  useEffect(() => {
+    const openNoteCapture = () => {
+      setView("quicknote");
+      setSearch("");
+    };
+    window.addEventListener("wt:open-note-capture", openNoteCapture);
+    return () => window.removeEventListener("wt:open-note-capture", openNoteCapture);
+  }, []);
+
   // 全局搜索面板：打开报告 / 跳转待办 / 跳转速记 / 搜输入记录
   const gsOpenReport = (type: string, date: string) => {
     if (type === "daily" || type === "weekly" || type === "monthly") {

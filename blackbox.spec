@@ -106,6 +106,7 @@ a = Analysis(
         'src.storage',
         'src.storage.database',
         'src.storage.models',
+        'src.storage.insight_capture',
         'src.storage.markdown_exporter',
         'src.storage.data_exporter',
         'src.ai',

@@ -126,6 +126,7 @@ class NoteRecord:
     """速记记录（单行速记 + 上下文关联）"""
     id: Optional[int] = None
     content: str = ""               # 速记内容
+    tags: str = ""                  # 逗号分隔标签（v5.4：标签云/筛选 + 洞察收件箱落盘）
     source: str = "manual"          # manual | hotkey | report
     source_ref: str = ""            # 来源标识（如报告日期）
     linked_todo_id: Optional[int] = None  # 关联的待办 id（可空）

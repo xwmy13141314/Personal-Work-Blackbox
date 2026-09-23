@@ -107,3 +107,9 @@ performance:
 notification:
   on_report_generated: true
   on_privacy_mode: true
+
+# ==================== 洞察收件箱（v5.4） ====================
+insight:
+  # 速记保存时额外落盘为 Markdown，供「每日洞察」AI 蒸馏流程增量消费。
+  # 留空 = 仅入库不落盘；也可在职迹「速记」页工具栏配置，免改此文件。
+  inbox_dir: ""

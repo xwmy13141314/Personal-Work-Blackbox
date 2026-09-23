@@ -16,6 +16,7 @@ class HotkeyManager:
     Ctrl+Alt+P: 暂停/恢复采集
     Ctrl+Alt+R: 导出今日日志
     Ctrl+Alt+N: 隐私模式
+    Ctrl+Alt+I: 速记（v5.4：唤起主窗口并聚焦速记输入框）
     """
 
     def __init__(
@@ -23,10 +24,12 @@ class HotkeyManager:
         on_toggle_pause: Callable[[], None],
         on_export: Callable[[], None],
         on_privacy_mode: Callable[[], None],
+        on_capture_note: Callable[[], None] | None = None,
     ):
         self._on_toggle_pause = on_toggle_pause
         self._on_export = on_export
         self._on_privacy_mode = on_privacy_mode
+        self._on_capture_note = on_capture_note or (lambda: None)
         self._listener: keyboard.GlobalHotKeys | None = None
 
     def start(self):
@@ -36,9 +39,10 @@ class HotkeyManager:
                 '<ctrl>+<alt>+p': self._on_toggle_pause,
                 '<ctrl>+<alt>+r': self._on_export,
                 '<ctrl>+<alt>+n': self._on_privacy_mode,
+                '<ctrl>+<alt>+i': self._on_capture_note,
             })
             self._listener.start()
-            logger.info("全局快捷键已注册")
+            logger.info("全局快捷键已注册（Ctrl+Alt+P/R/N/I）")
         except Exception:
             logger.exception("注册全局快捷键失败（可能需要管理员权限）")
 

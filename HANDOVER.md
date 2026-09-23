@@ -6,11 +6,28 @@
 职迹 WorkTrace：纯本地、隐私优先的个人 AI 工作日志工具。三层采集（键盘含中文 IME + 窗口切换 + 剪贴板）→ 隐私过滤 → LLM 日报/周报/月报 + 待办闭环 + 报告可视化 + 导出 + 拼音智能识别 + UIA/COM 真实上屏文本采集。工作目录（唯一主线）：`E:\工作\AI CLOUDE\职迹\轻量化键盘记录工具\`（git 仓库；`.git` 在此，父级 `职迹\` 不是 git 仓库，环境检测报「非 git」时勿被误导）。
 
 ## 2. 当前任务
-**v5.3.0 输入采集准确性已开发完成（2026-09-21），待上传 GitHub**：键盘钩子修复（C 系列）+ UIA/COM 真实上屏文本（B 系列）。本地 `.git` 仓库严重损坏（`objects/pack/*.pack` 缺失 + `refs/` 缺失 + 旧 index cache-tree 指向丢失对象），**v4.4.0 及之后的所有提交对象已永久丢失，v4.3.2~v5.2.0 的独立提交历史无法恢复**（各版本内容已在 CHANGELOG/PRD 完整记录）。上传方法：双击根目录 `git-upload-v5.3.0.bat`（**就地重建方案**——`.git` 目录被编辑器/杀毒句柄占用无法改名，故不 rename：清理 `.git` 内损坏状态文件 index/packed-refs/reflog/无效引用（保留完整对象包与 config）→ 就地 `git init` → fetch → main 对齐远程 `95d20bee` → reset 重建索引（失败自动 `--refetch` 重试一次）→ 暂存 → 预览 → 确认提交推送，一个 `release(v5.3.0)` 提交覆盖 v4.3.2~v5.3.0 全部变更）。bat 必须为 GBK 编码（UTF-8+chcp 65001 会触发 cmd 解析错位）。沙箱内 git 写操作被拦截，必须在非 TRAE 终端执行。
+**v5.4.0 已完成并推送 GitHub（2026-09-23）**：把一条并行开发线（v4.3.1 基线上未提交的本地 v4.5.0「洞察速记」）收编进 v5.3.0 主线——速记标签化（tags + 标签云 + 精确筛选）+ 洞察收件箱双写 + Ctrl+Alt+I + Web UI 模式补齐全局快捷键；并修复上游仓库缺陷（拼音 HMM/DAG 词典被 `.gitignore` 的 `data/` 规则误排除，已补回 6 个词典文件 5.9MB）。
+
+**工作区变更（重要）**：本次起仓库根改为 **`D:\AI 学习\AI coding\职迹\`**（GitHub main + 完整历史），`dist/`、`data/`、`web_frontend/`、`_local_source_backup_*/`、`.workbuddy/` 均 gitignored。旧的 `E:\工作\AI CLOUDE\职迹\轻量化键盘记录工具\` 为历史工作目录。
+
+**历史背景**：v5.3.0 的 `.git` 曾严重损坏（`objects/pack/*.pack` + `refs/` 缺失），v4.4.0~v5.3.0 提交对象永久丢失，最终以一次 `release(v5.3.0)` squash 提交对齐远程 `95d20bee` 后推送。因此 v4.3.2~v5.2.0 无独立提交历史，内容以 CHANGELOG/PRD 为准。
+
+**并行线遗留说明**：本地 v4.5.0 的独立 `insights` 表、`todo_archiver.py`、前端 `InsightView.tsx` 均为**重复实现，已弃用**（v5.3.0 已分别有 `notes` 速记表、`DataExporter.append_todo_archive`、`QuickNoteView`）。唯一源码副本一度只存在于系统 Temp 目录，已备份至 `_local_source_backup_20260923/`。
 
 ## 3. 已完成进展
 
-**本会话（2026-09-15）v5.3.0 输入采集准确性（C+B 方案，测试 504 passed）：**
+**本会话（2026-09-23）v5.4.0 速记标签化 + 洞察收件箱双写（测试 524 passed / 0 failed）：**
+- [x] 速记标签：`notes` 增加 `tags` 列（含旧库迁移）；标签归一化（中英文逗号、去重）；标签云（次数降序）；按标签精确筛选（逗号包裹匹配）；搜索命中内容 + 标签
+- [x] 洞察收件箱双写：`src/storage/insight_capture.py`（`save_to_inbox` / `normalize_tags` / `inbox_status` / `count_inbox_files`）；速记保存时同步落盘 Markdown（frontmatter `type/created/tags/source`，文件名 `YYYY-MM-DD_HHMM.md`，同分钟加序号）
+- [x] 收件箱配置面板：目录写入 `config.yaml` 的 `insight.inbox_dir`，**热生效**（写文件 + 更新引擎内存配置 + 重载单例）；显示连通性/可写性/待处理文件数
+- [x] 全局快捷键 Ctrl+Alt+I（`hotkey_manager` + `web_ui` 接线 + 前端 `wt:open-note-capture` 事件 → 跳转速记页 + 聚焦输入框）
+- [x] **Web UI 模式补齐全局快捷键**：此前 `Ctrl+Alt+P/R/N` 仅在托盘/GUI 模式注册；现 `run_web()` 内统一注册，`_on_closing` 时 `hotkey_manager.stop()`
+- [x] 速记页四指标（今日/本周/累计/置顶）+ 卡片标签 chip 可点选筛选
+- [x] **修复上游缺陷**：`.gitignore` 的 `data/` 规则误排除 `src/libs/Pinyin2Hanzi/data/*.json.gz` → 新克隆仓库拼音识别退化为单字映射（`test_pinyin_converter.py` 8 个用例失败）。补回 6 个词典文件（5.9MB，vendored letiantian/Pinyin2Hanzi · MIT）+ `.gitignore` 例外规则
+- [x] 版本号统一 5.4.0（web_api / AboutView / pyproject）；文档同步（CHANGELOG v5.4.0 / README / PRD 版本+历史 / 使用说明与 + 视图导航 + 快捷键 + 配置项）
+- [x] 合并策略：以 GitHub v5.3.0 为基线，只移植本地独有能力；重复实现（insights 表 / todo_archiver / InsightView / 旧 keyboard_hook 清理）全部弃用
+
+**v5.3.0 输入采集准确性（2026-09-15~09-21，已推送，测试基线 504 passed + 8 failed 拼音词典缺失）：**
 - [x] C1 数字键选字触发 IME 上屏检查：`_IME_CONFIRM_VKS` 覆盖数字键（主键盘 0x30-0x39 + 小键盘 0x60-0x69），确认键后 35ms 轮询 `ImmGetCompositionStringW` 取上屏结果
 - [x] C2 钩子回调减负防丢键：`_kbd_hook_callback` 仅最小解析 `put_nowait` 入队，`_dispatch_loop` 独立线程消费
 - [x] C3 残缺拼音不硬转：`pinyin_converter.py` 置信度门控（2 音节 ≥-0.9 / ≥3 音节 ≥-1.0），低置信度转 HMM 仲裁，仍低保留原文

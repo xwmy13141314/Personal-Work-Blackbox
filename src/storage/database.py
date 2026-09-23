@@ -10,7 +10,7 @@ import logging
 import sqlite3
 import threading
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Generator
 
@@ -157,10 +157,11 @@ CREATE TABLE IF NOT EXISTS todo_notify_log (
     PRIMARY KEY (todo_id, notify_date, notify_type)
 );
 
--- 速记表（P1：单行速记 + 上下文关联）
+-- 速记表（P1：单行速记 + 上下文关联；v5.4：+tags 标签，用于标签云/筛选与洞察收件箱落盘）
 CREATE TABLE IF NOT EXISTS notes (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     content         TEXT NOT NULL,
+    tags            TEXT DEFAULT '',
     source          TEXT DEFAULT 'manual',
     source_ref      TEXT DEFAULT '',
     linked_todo_id  INTEGER,
@@ -297,6 +298,7 @@ class Database:
             ("todos", "progress", "INTEGER NOT NULL DEFAULT 0"),
             ("todos", "deleted_at", "TEXT"),
             ("todos", "project_id", "INTEGER"),
+            ("notes", "tags", "TEXT DEFAULT ''"),
         ]
         for table, column, col_type in migrations:
             try:
@@ -1314,32 +1316,48 @@ class Database:
     # ==================== 速记 CRUD ====================
 
     def insert_note(self, content: str, source: str = "manual", source_ref: str = "",
-                    linked_todo_id: int | None = None, pinned: bool = False) -> int:
-        """插入速记，返回 id"""
+                    linked_todo_id: int | None = None, pinned: bool = False,
+                    tags: str = "") -> int:
+        """插入速记，返回 id（tags：逗号分隔标签串，建议先用 normalize_tags 归一化）"""
         now = datetime.now().isoformat()
         with self._cursor() as cur:
             cur.execute(
-                "INSERT INTO notes (content, source, source_ref, linked_todo_id, pinned, "
-                "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (content, source, source_ref, linked_todo_id, int(pinned), now, now),
+                "INSERT INTO notes (content, tags, source, source_ref, linked_todo_id, pinned, "
+                "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (content, tags or "", source, source_ref, linked_todo_id, int(pinned), now, now),
             )
             return cur.lastrowid
 
     def query_notes(self, limit: int = 100, offset: int = 0,
-                    include_deleted: bool = False) -> list[dict]:
-        """查询速记列表（按 pinned DESC, created_at DESC）"""
-        sql = ("SELECT id, content, source, source_ref, linked_todo_id, pinned, "
-               "created_at, updated_at, deleted_at FROM notes "
-               + ("" if include_deleted else "WHERE deleted_at IS NULL ") +
-               "ORDER BY pinned DESC, created_at DESC LIMIT ? OFFSET ?")
+                    include_deleted: bool = False, tag: str = "") -> list[dict]:
+        """查询速记列表（按 pinned DESC, created_at DESC）
+
+        Args:
+            tag: 非空时只返回含该标签的速记（v5.4 标签云筛选）
+        """
+        tag = (tag or "").strip()
+        where: list[str] = []
+        params: list = []
+        if not include_deleted:
+            where.append("deleted_at IS NULL")
+        if tag:
+            # 用逗号包裹后 LIKE，避免 "报告" 误匹配 "周报告" 这类子串
+            where.append("(',' || tags || ',') LIKE ?")
+            params.append(f"%,{tag},%")
+        sql = ("SELECT id, content, tags, source, source_ref, linked_todo_id, pinned, "
+               "created_at, updated_at, deleted_at FROM notes ")
+        if where:
+            sql += "WHERE " + " AND ".join(where) + " "
+        sql += "ORDER BY pinned DESC, created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
         with self._cursor() as cur:
-            cur.execute(sql, (limit, offset))
+            cur.execute(sql, params)
             rows = cur.fetchall()
         return [self._note_row_to_dict(r) for r in rows]
 
     def update_note(self, note_id: int, fields: dict) -> bool:
         """更新速记字段"""
-        allowed = {"content", "source", "source_ref", "linked_todo_id", "pinned"}
+        allowed = {"content", "tags", "source", "source_ref", "linked_todo_id", "pinned"}
         sets = []
         vals = []
         for k in allowed:
@@ -1370,25 +1388,63 @@ class Database:
             return cur.rowcount > 0
 
     def search_notes(self, keyword: str, limit: int = 20) -> list[dict]:
-        """全文搜索速记"""
+        """全文搜索速记（内容 + 标签，v5.4）"""
         kw = f"%{keyword}%"
         with self._cursor() as cur:
             cur.execute(
-                "SELECT id, content, source, source_ref, linked_todo_id, pinned, "
+                "SELECT id, content, tags, source, source_ref, linked_todo_id, pinned, "
                 "created_at, updated_at, deleted_at FROM notes "
-                "WHERE deleted_at IS NULL AND content LIKE ? "
+                "WHERE deleted_at IS NULL AND (content LIKE ? OR tags LIKE ?) "
                 "ORDER BY pinned DESC, created_at DESC LIMIT ?",
-                (kw, limit),
+                (kw, kw, limit),
             )
             rows = cur.fetchall()
         return [self._note_row_to_dict(r) for r in rows]
 
+    def list_note_tags(self) -> list[dict]:
+        """统计全部标签及出现次数（标签云数据源，按次数降序、同次数按标签名升序）"""
+        counts: dict[str, int] = {}
+        with self._cursor() as cur:
+            cur.execute("SELECT tags FROM notes WHERE deleted_at IS NULL AND tags != ''")
+            rows = cur.fetchall()
+        for (raw,) in rows:
+            for t in str(raw or "").split(","):
+                t = t.strip()
+                if t:
+                    counts[t] = counts.get(t, 0) + 1
+        return [{"tag": k, "count": v}
+                for k, v in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))]
+
+    def get_note_stats(self) -> dict:
+        """速记统计：今日 / 本周（周一为始）/ 累计 / 置顶（v5.4 速记页指标）"""
+        today = date.today()
+        week_start = (today - timedelta(days=today.weekday())).isoformat()
+        with self._cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM notes WHERE deleted_at IS NULL")
+            total = int(cur.fetchone()[0] or 0)
+            cur.execute(
+                "SELECT COUNT(*) FROM notes WHERE deleted_at IS NULL "
+                "AND substr(created_at, 1, 10) = ?",
+                (today.isoformat(),),
+            )
+            today_n = int(cur.fetchone()[0] or 0)
+            cur.execute(
+                "SELECT COUNT(*) FROM notes WHERE deleted_at IS NULL "
+                "AND substr(created_at, 1, 10) >= ?",
+                (week_start,),
+            )
+            week_n = int(cur.fetchone()[0] or 0)
+            cur.execute("SELECT COUNT(*) FROM notes WHERE deleted_at IS NULL AND pinned = 1")
+            pinned_n = int(cur.fetchone()[0] or 0)
+        return {"today": today_n, "week": week_n, "total": total, "pinned": pinned_n}
+
     def _note_row_to_dict(self, row) -> dict:
         return {
-            "id": row[0], "content": row[1] or "", "source": row[2] or "manual",
-            "source_ref": row[3] or "", "linked_todo_id": row[4],
-            "pinned": bool(row[5]), "created_at": row[6] or "",
-            "updated_at": row[7] or "", "deleted_at": row[8] or "",
+            "id": row[0], "content": row[1] or "", "tags": row[2] or "",
+            "source": row[3] or "manual",
+            "source_ref": row[4] or "", "linked_todo_id": row[5],
+            "pinned": bool(row[6]), "created_at": row[7] or "",
+            "updated_at": row[8] or "", "deleted_at": row[9] or "",
         }
 
     # ==================== 项目 CRUD ====================

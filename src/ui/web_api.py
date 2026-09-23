@@ -16,7 +16,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_APP_VERSION = "5.3.0"
+_APP_VERSION = "5.4.0"
 
 
 class BlackboxAPI:
@@ -1375,31 +1375,60 @@ class BlackboxAPI:
             logger.exception("保存同意状态失败")
             return {"ok": False, "error": str(e)}
 
-    # ==================== 速记 CRUD ====================
+    # ==================== 速记 CRUD（v5.4：+标签 / +洞察收件箱双写） ====================
 
-    def get_notes(self, limit: int = 100, offset: int = 0) -> list[dict]:
-        """获取速记列表"""
+    def _inbox_dir(self) -> str:
+        """当前洞察收件箱目录（取自 config.yaml 的 insight.inbox_dir，空 = 不落盘）"""
         try:
-            return self._engine._db.query_notes(limit=limit, offset=offset)
+            return str(self._engine._settings.get("insight.inbox_dir", "") or "").strip()
+        except Exception:
+            return ""
+
+    def get_notes(self, limit: int = 100, offset: int = 0, tag: str = "") -> list[dict]:
+        """获取速记列表（tag 非空时按标签过滤，v5.4）"""
+        try:
+            return self._engine._db.query_notes(limit=limit, offset=offset, tag=tag)
         except Exception as e:
             logger.exception("查询速记失败")
             return []
 
     def add_note(self, content: str, source: str = "manual", source_ref: str = "",
-                 linked_todo_id: int | None = None, pinned: bool = False) -> dict:
-        """新增速记"""
+                 linked_todo_id: int | None = None, pinned: bool = False,
+                 tags: str = "") -> dict:
+        """新增速记
+
+        v5.4：支持标签；若配置了洞察收件箱，保存后同步落盘一份 Markdown
+        （供「每日洞察」AI 蒸馏流程消费）。落盘失败不影响入库。
+        """
         try:
+            from src.storage.insight_capture import normalize_tags, save_to_inbox
+
+            content = (content or "").strip()
+            if not content:
+                return {"ok": False, "error": "速记内容不能为空"}
+            tags_norm = normalize_tags(tags)
             note_id = self._engine._db.insert_note(
-                content, source, source_ref, linked_todo_id, pinned
+                content, source, source_ref, linked_todo_id, pinned, tags_norm
             )
-            return {"ok": True, "id": note_id}
+            inbox_path = ""
+            inbox_dir = self._inbox_dir()
+            if inbox_dir:
+                inbox_path = save_to_inbox(
+                    content, tags_norm, datetime.now().isoformat(), inbox_dir
+                )
+            return {"ok": True, "id": note_id, "tags": tags_norm, "inbox_path": inbox_path}
         except Exception as e:
             logger.exception("新增速记失败")
             return {"ok": False, "error": str(e)}
 
     def update_note(self, note_id: int, fields: dict) -> dict:
-        """更新速记字段"""
+        """更新速记字段（tags 会自动归一化）"""
         try:
+            fields = dict(fields or {})
+            if "tags" in fields:
+                from src.storage.insight_capture import normalize_tags
+
+                fields["tags"] = normalize_tags(fields["tags"])
             ok = self._engine._db.update_note(note_id, fields)
             return {"ok": ok}
         except Exception as e:
@@ -1413,6 +1442,79 @@ class BlackboxAPI:
             return {"ok": ok}
         except Exception as e:
             logger.exception("删除速记失败")
+            return {"ok": False, "error": str(e)}
+
+    def get_note_stats(self) -> dict:
+        """速记统计（今日/本周/累计/置顶）+ 收件箱连接状态（v5.4）"""
+        try:
+            from src.storage.insight_capture import inbox_status
+
+            stats = self._engine._db.get_note_stats()
+            inbox_dir = self._inbox_dir()
+            stats["inbox"] = inbox_status(inbox_dir)
+            stats["inbox_dir"] = inbox_dir
+            return {"ok": True, **stats}
+        except Exception as e:
+            logger.exception("速记统计失败")
+            return {"ok": False, "error": str(e)}
+
+    def get_note_tags(self) -> list[dict]:
+        """标签云数据：全部标签及出现次数（v5.4）"""
+        try:
+            return self._engine._db.list_note_tags()
+        except Exception as e:
+            logger.exception("统计速记标签失败")
+            return []
+
+    def get_insight_config(self) -> dict:
+        """读取洞察收件箱配置与连接状态（v5.4）"""
+        try:
+            from src.storage.insight_capture import inbox_status
+
+            inbox_dir = self._inbox_dir()
+            return {"ok": True, "inbox_dir": inbox_dir, "status": inbox_status(inbox_dir)}
+        except Exception as e:
+            logger.exception("读取洞察配置失败")
+            return {"ok": False, "error": str(e)}
+
+    def save_insight_config(self, inbox_dir: str = "") -> dict:
+        """保存洞察收件箱目录（写入 config.yaml 并热重载，无需重启；v5.4）"""
+        import shutil
+        import yaml
+        from src.main import get_app_root
+        from src.storage.insight_capture import inbox_status
+
+        try:
+            inbox_dir = str(inbox_dir or "").strip()
+            if inbox_dir:
+                Path(inbox_dir).mkdir(parents=True, exist_ok=True)
+            config_path = get_app_root() / "config" / "config.yaml"
+            if not config_path.exists():
+                return {"ok": False, "error": f"配置文件不存在: {config_path}"}
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            shutil.copy2(config_path, config_path.with_suffix(".yaml.bak"))
+            cfg.setdefault("insight", {})["inbox_dir"] = inbox_dir
+            with open(config_path, "w", encoding="utf-8") as f:
+                f.write("# Personal Work Blackbox 配置文件\n")
+                f.write("# 由设置页/速记页编辑，原注释版本见 config.yaml.bak\n")
+                f.write("# API Key 不存于此文件，见 config/.secrets.yaml 或环境变量 {PROVIDER}_API_KEY\n\n")
+                yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+            # 热生效：先直接改当前引擎持有的配置对象（确定生效），
+            # 再尽力重载全局单例（多实例场景下保持一致）
+            try:
+                self._engine._settings.config.setdefault("insight", {})["inbox_dir"] = inbox_dir
+            except Exception:
+                logger.exception("更新内存配置失败（下次启动仍会生效）")
+            try:
+                from src.config.settings import Settings
+
+                Settings.get_instance().reload()
+            except Exception:
+                logger.debug("重载全局配置跳过", exc_info=True)
+            return {"ok": True, "inbox_dir": inbox_dir, "status": inbox_status(inbox_dir)}
+        except Exception as e:
+            logger.exception("保存洞察配置失败")
             return {"ok": False, "error": str(e)}
 
     # ==================== 项目 CRUD ====================

@@ -412,6 +412,50 @@ def run_web():
     # 把窗口引用注入 API，供文件保存对话框等使用
     api.bind_window(window)
 
+    # 全局快捷键（v5.4：Web UI 模式下同样可用；Ctrl+Alt+I 唤起窗口并聚焦速记）
+    from src.ui.hotkey_manager import HotkeyManager
+
+    def _hk_toggle_pause():
+        try:
+            if api._is_paused:
+                api.resume_recording()
+            else:
+                api.pause_recording()
+        except Exception:
+            logger.exception("快捷键切换暂停失败")
+
+    def _hk_export_today():
+        try:
+            path = engine._exporter.export_daily(time.strftime("%Y-%m-%d"))
+            logger.info("日志已导出: %s", path)
+        except Exception:
+            logger.exception("快捷键导出失败")
+
+    def _hk_toggle_privacy():
+        try:
+            engine.toggle_privacy_mode()
+        except Exception:
+            logger.exception("快捷键切换隐私模式失败")
+
+    def _hk_capture_note():
+        """Ctrl+Alt+I：唤起主窗口并通知前端打开速记输入"""
+        try:
+            window.show()
+            window.restore()
+            window.evaluate_js(
+                "window.dispatchEvent(new CustomEvent('wt:open-note-capture'));"
+            )
+        except Exception:
+            logger.exception("速记快捷键触发失败")
+
+    hotkey_manager = HotkeyManager(
+        on_toggle_pause=_hk_toggle_pause,
+        on_export=_hk_export_today,
+        on_privacy_mode=_hk_toggle_privacy,
+        on_capture_note=_hk_capture_note,
+    )
+    hotkey_manager.start()
+
     # 页面加载完成标志（auto 模式据此判断嵌入窗口是否可用）
     _loaded = threading.Event()
     window.events.loaded += _loaded.set
@@ -424,6 +468,10 @@ def run_web():
             return
         _state["shutting_down"] = True
         logger.info("窗口关闭事件触发，开始关闭引擎")
+        try:
+            hotkey_manager.stop()
+        except Exception:
+            logger.exception("注销全局快捷键失败")
         try:
             api.shutdown()
         except Exception:

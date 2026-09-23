@@ -174,6 +174,7 @@ export interface TodoAdvice {
 export interface Note {
   id: number
   content: string
+  tags: string // 逗号分隔标签（v5.4）
   source: string // manual | hotkey | report
   source_ref: string
   linked_todo_id: number | null
@@ -181,6 +182,39 @@ export interface Note {
   created_at: string
   updated_at: string
   deleted_at: string
+}
+
+// 标签云条目（v5.4）
+export interface NoteTag {
+  tag: string
+  count: number
+}
+
+// 洞察收件箱状态（v5.4）
+export interface InboxStatus {
+  configured: boolean
+  exists: boolean
+  writable: boolean
+  count: number
+  dir: string
+}
+
+// 速记统计 + 收件箱状态（v5.4）
+export interface NoteStats {
+  ok: boolean
+  today: number
+  week: number
+  total: number
+  pinned: number
+  inbox_dir: string
+  inbox: InboxStatus
+}
+
+// 洞察收件箱配置（v5.4）
+export interface InsightConfig {
+  ok: boolean
+  inbox_dir: string
+  status: InboxStatus
 }
 
 // 项目
@@ -357,11 +391,16 @@ export interface BlackboxApi {
   check_todo_notifications: () => Promise<{ ok: boolean; notified?: number; error?: string }>
   // 在资源管理器中定位导出的文件
   reveal_path: (path: string) => Promise<{ ok: boolean; error?: string }>
-  // 速记 CRUD
-  get_notes: (limit?: number, offset?: number) => Promise<Note[]>
-  add_note: (content: string, source?: string, source_ref?: string, linked_todo_id?: number | null, pinned?: boolean) => Promise<{ ok: boolean; id?: number; error?: string }>
+  // 速记 CRUD（v5.4：+tags 标签 / +洞察收件箱双写）
+  get_notes: (limit?: number, offset?: number, tag?: string) => Promise<Note[]>
+  add_note: (content: string, source?: string, source_ref?: string, linked_todo_id?: number | null, pinned?: boolean, tags?: string) => Promise<{ ok: boolean; id?: number; tags?: string; inbox_path?: string; error?: string }>
   update_note: (note_id: number, fields: Partial<Note>) => Promise<{ ok: boolean; error?: string }>
   delete_note: (note_id: number) => Promise<{ ok: boolean; error?: string }>
+  // 速记标签云 + 统计 + 洞察收件箱配置（v5.4）
+  get_note_tags: () => Promise<NoteTag[]>
+  get_note_stats: () => Promise<NoteStats>
+  get_insight_config: () => Promise<InsightConfig>
+  save_insight_config: (inbox_dir: string) => Promise<{ ok: boolean; inbox_dir?: string; status?: InboxStatus; error?: string }>
   // 项目 CRUD
   get_projects: () => Promise<Project[]>
   add_project: (name: string, color?: string, icon?: string, description?: string) => Promise<{ ok: boolean; id?: number; error?: string }>
@@ -436,10 +475,11 @@ const mockTimeDist: TimeDistItem[] = [
 ]
 // 速记 mock 数据
 let mockNoteSeq = 200
+let mockInboxDir = ""
 const mockNotes: Note[] = [
-  { id: 201, content: "骨传导耳机样品交付期推迟到下周三", source: "hotkey", source_ref: "", linked_todo_id: 2, pinned: true, created_at: "2026-09-06T10:30:00", updated_at: "2026-09-06T10:30:00", deleted_at: "" },
-  { id: 202, content: "竞品对标表续航数据需补充 MatePad 11.5 的测试结果", source: "manual", source_ref: "", linked_todo_id: null, pinned: false, created_at: "2026-09-06T14:20:00", updated_at: "2026-09-06T14:20:00", deleted_at: "" },
-  { id: 203, content: "客户反馈对讲机 GH650 LTE 专网参数需要重新确认", source: "report", source_ref: "2026-09-05", linked_todo_id: null, pinned: false, created_at: "2026-09-05T18:00:00", updated_at: "2026-09-05T18:00:00", deleted_at: "" },
+  { id: 201, content: "骨传导耳机样品交付期推迟到下周三", tags: "供应链,交付", source: "hotkey", source_ref: "", linked_todo_id: 2, pinned: true, created_at: "2026-09-06T10:30:00", updated_at: "2026-09-06T10:30:00", deleted_at: "" },
+  { id: 202, content: "竞品对标表续航数据需补充 MatePad 11.5 的测试结果", tags: "竞品,数据", source: "manual", source_ref: "", linked_todo_id: null, pinned: false, created_at: "2026-09-06T14:20:00", updated_at: "2026-09-06T14:20:00", deleted_at: "" },
+  { id: 203, content: "客户反馈对讲机 GH650 LTE 专网参数需要重新确认", tags: "客户,交付", source: "report", source_ref: "2026-09-05", linked_todo_id: null, pinned: false, created_at: "2026-09-05T18:00:00", updated_at: "2026-09-05T18:00:00", deleted_at: "" },
 ]
 // 项目 mock 数据
 let mockProjectSeq = 300
@@ -732,18 +772,20 @@ const mockApi: BlackboxApi = {
   check_todo_notifications: async () => ({ ok: true, notified: 0 }),
   reveal_path: async (_path: string) => ({ ok: true }),
   // 速记 mock
-  get_notes: async (_limit = 100, _offset = 0) => {
-    return mockNotes.filter((n) => !n.deleted_at)
+  get_notes: async (_limit = 100, _offset = 0, tag = "") => {
+    return mockNotes
+      .filter((n) => !n.deleted_at)
+      .filter((n) => !tag || ("," + n.tags + ",").includes("," + tag + ","))
   },
-  add_note: async (content: string, source = "manual", source_ref = "", linked_todo_id: number | null = null, pinned = false) => {
+  add_note: async (content: string, source = "manual", source_ref = "", linked_todo_id: number | null = null, pinned = false, tags = "") => {
     mockNoteSeq++
     const now = new Date().toISOString()
     const note: Note = {
-      id: mockNoteSeq, content, source, source_ref,
+      id: mockNoteSeq, content, tags, source, source_ref,
       linked_todo_id, pinned, created_at: now, updated_at: now, deleted_at: "",
     }
     mockNotes.push(note)
-    return { ok: true, id: mockNoteSeq }
+    return { ok: true, id: mockNoteSeq, tags, inbox_path: "" }
   },
   update_note: async (note_id: number, fields: Partial<Note>) => {
     const n = mockNotes.find((x) => x.id === note_id)
@@ -757,6 +799,53 @@ const mockApi: BlackboxApi = {
     const n = mockNotes.find((x) => x.id === note_id && !x.deleted_at)
     if (n) n.deleted_at = new Date().toISOString()
     return { ok: !!n }
+  },
+  // 速记标签云 / 统计 / 洞察收件箱配置 mock（v5.4）
+  get_note_tags: async () => {
+    const counts: Record<string, number> = {}
+    mockNotes
+      .filter((n) => !n.deleted_at && n.tags)
+      .forEach((n) => n.tags.split(",").map((t) => t.trim()).filter(Boolean)
+        .forEach((t) => { counts[t] = (counts[t] || 0) + 1 }))
+    return Object.entries(counts)
+      .map(([tag, count]) => ({ tag, count }))
+      .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag))
+  },
+  get_note_stats: async () => {
+    const live = mockNotes.filter((n) => !n.deleted_at)
+    const today = new Date().toISOString().slice(0, 10)
+    const weekStart = new Date(Date.now() - ((new Date().getDay() + 6) % 7) * 86400000)
+      .toISOString().slice(0, 10)
+    return {
+      ok: true,
+      today: live.filter((n) => n.created_at.slice(0, 10) === today).length,
+      week: live.filter((n) => n.created_at.slice(0, 10) >= weekStart).length,
+      total: live.length,
+      pinned: live.filter((n) => n.pinned).length,
+      inbox_dir: mockInboxDir,
+      inbox: {
+        configured: !!mockInboxDir, exists: !!mockInboxDir, writable: !!mockInboxDir,
+        count: mockInboxDir ? 3 : 0, dir: mockInboxDir,
+      },
+    }
+  },
+  get_insight_config: async () => ({
+    ok: true,
+    inbox_dir: mockInboxDir,
+    status: {
+      configured: !!mockInboxDir, exists: !!mockInboxDir, writable: !!mockInboxDir,
+      count: mockInboxDir ? 3 : 0, dir: mockInboxDir,
+    },
+  }),
+  save_insight_config: async (inbox_dir: string) => {
+    mockInboxDir = inbox_dir
+    return {
+      ok: true, inbox_dir,
+      status: {
+        configured: !!inbox_dir, exists: !!inbox_dir, writable: !!inbox_dir,
+        count: inbox_dir ? 3 : 0, dir: inbox_dir,
+      },
+    }
   },
   // 项目 mock
   get_projects: async () => mockProjects.filter((p) => !p.archived),

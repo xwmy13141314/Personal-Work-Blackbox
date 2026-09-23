@@ -91,6 +91,12 @@ DEFAULTS = {
         "on_report_generated": True,
         "on_privacy_mode": True,
     },
+    # 洞察收件箱（v5.4 新增）
+    # 速记保存时额外落盘为 Markdown，供「每日洞察」AI 蒸馏流程增量消费；
+    # 留空 = 仅入库不落盘。也可在「速记」页工具栏配置，免改此文件。
+    "insight": {
+        "inbox_dir": "",
+    },
     "rest_api": {
         "enabled": False,        # 默认关闭，用户需手动开启
         "port": 19527,           # 默认端口

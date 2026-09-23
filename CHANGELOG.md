@@ -1,5 +1,38 @@
 # Changelog
 
+## v5.4.0 - 2026-09-23 — 速记标签化 + 洞察收件箱双写 + 拼音词典入库修复
+
+> 本版把一条**并行开发线**（v4.3.1 基线上、未提交的本地 v4.5.0「洞察速记」）收编进 v5.3.0 主线：
+> 以 v5.3.0 为基线，只移植本地独有的能力，重复实现一律弃用（见下「合并说明」）。
+
+### 新增（源自本地 v4.5.0）
+- **速记标签（tags）**：`notes` 表新增 `tags` 列（含旧库迁移）；速记支持输入标签（逗号/中文逗号分隔，自动去重归一化）、卡片标签 chip、**标签云**（按出现次数降序）、**按标签精确筛选**（`,` 包裹匹配，`竞品` 不会误中 `竞品分析`）；搜索同时匹配内容与标签
+- **洞察收件箱双写**：新增 `src/storage/insight_capture.py` —— 速记保存时同时 ① 入库 `notes`，② 落盘为收件箱 Markdown（frontmatter：`type/created/tags/source`，文件名 `YYYY-MM-DD_HHMM.md`，同分钟自动加序号），供「每日洞察」档案的 AI 蒸馏流程增量消费；收件箱留空 = 仅入库
+- **收件箱配置与连接状态**：速记页工具栏「洞察收件箱」面板 —— 目录配置（写入 `config.yaml` 的 `insight.inbox_dir`，**热生效无需重启**）、连通性/可写性探测、待处理文件计数
+- **速记页指标**：今日 / 本周（周一为始）/ 累计 / 置顶 四指标
+- **全局快捷键 Ctrl+Alt+I**：任意界面唤起主窗口并跳转速记页、自动聚焦输入框（`hotkey_manager` + `web_ui` + 前端 `wt:open-note-capture` 事件）
+- **Web UI 模式下全局快捷键整体可用**：此前 `Ctrl+Alt+P/R/N` 仅在托盘/GUI 模式注册，Web UI 模式补齐（含 `hotkey_manager.stop()` 随窗口关闭释放）
+
+### 修复（上游仓库缺陷）
+- **拼音 HMM/DAG 词典未入库**：`.gitignore` 的 `data/` 规则误排除了 `src/libs/Pinyin2Hanzi/data/*.json.gz`，导致新克隆的仓库拼音识别退化为单字映射（`test_pinyin_converter.py` 8 个用例失败）。本次补回 6 个词典文件（`hmm_py2hz/hmm_start/hmm_emission/hmm_transition/dag_char/dag_phrase`，共 5.9MB，vendored 自 letiantian/Pinyin2Hanzi · MIT）并在 `.gitignore` 增加例外规则
+
+### 合并说明（本次同步的并行开发线）
+- **弃用** 本地 v4.5.0 的独立 `insights` 表 / `capture_insight` 等 API —— v5.3.0 的 `notes` 速记是官方实现，标签能力改挂到 `notes` 上
+- **弃用** 本地 `todo_archiver.py` —— v5.3.0 的 `DataExporter.append_todo_archive` 已提供等价的待办删除文件双归档（`todo_archive_YYYY-MM.md` + `todo_archive.jsonl`）
+- **弃用** 本地前端 `InsightView.tsx` 独立页与 `App/TodoView/utils/pywebview` 的 v4.3.1 旧改动 —— 统一在 v5.3 的速记页（`QuickNoteView`）与既有归档视图上扩展
+- **弃用** 本地 `keyboard_hook.py` 的死代码清理 —— v5.3.0 已整文件重写（C 系列输入准确性修复），本地改动基于旧版
+
+### 修改文件
+- 后端：`src/storage/insight_capture.py`（新增）、`src/storage/database.py`（notes.tags 列 + 迁移 + CRUD + `list_note_tags` + `get_note_stats`）、`src/storage/models.py`（NoteRecord.tags）、`src/ui/web_api.py`（add_note 双写 + get_notes(tag) + get_note_tags/get_note_stats/get_insight_config/save_insight_config，版本 5.4.0）、`src/ui/hotkey_manager.py`（+Ctrl+Alt+I）、`src/ui/web_ui.py`（Web UI 模式快捷键接线）、`src/config/defaults.py`（+insight.inbox_dir）
+- 前端：`QuickNoteView.tsx`（标签输入/标签云/标签筛选/指标/收件箱配置面板）、`App.tsx`（Ctrl+Alt+I 事件 → 跳转速记页）、`pywebview.ts`（Note.tags + 4 个新 API + mock）、`AboutView.tsx`（v5.4.0）
+- 配置与打包：`config/config.example.yaml`（insight 段）、`blackbox.spec`（+src.storage.insight_capture）
+- 词典：`src/libs/Pinyin2Hanzi/data/*.json.gz`（6 个文件，补回上游遗漏）
+- 测试：`tests/test_insight.py`（新增：收件箱落盘/标签归一/标签精确筛选/标签云/统计/状态探测/API 双写/配置热生效）
+
+### 测试
+- 全量 **524 passed / 0 failed / 11 skipped**（v5.3.0 基线为 485 passed + 8 failed；其中 8 个为拼音词典缺失所致，已修复；新增洞察标签测试 31 个）
+
+
 ## v5.3.0 - 2026-09-15 — 输入采集准确性：键盘钩子修复（C 系列）+ UIA/COM 真实上屏文本（B 系列）
 
 > 目标：让记录的文本**就是真实上屏内容**，而不是键盘逆推的拼音近似。
