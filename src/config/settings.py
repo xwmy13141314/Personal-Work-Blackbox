@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from copy import deepcopy
 from pathlib import Path
@@ -10,6 +11,8 @@ from typing import Any
 import yaml
 
 from .defaults import DEFAULTS
+
+logger = logging.getLogger(__name__)
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
@@ -49,11 +52,27 @@ class Settings:
         cls._instance = None
 
     def _load(self):
-        """加载配置文件，与默认配置合并"""
+        """加载配置文件，与默认配置合并
+
+        安全特性：API Key 支持环境变量覆盖
+        环境变量命名规则：{PROVIDER}_API_KEY（如 GLM_API_KEY、DEEPSEEK_API_KEY）
+        环境变量优先于配置文件，避免密钥明文落盘。
+        """
         if self._config_path and self._config_path.exists():
             with open(self._config_path, "r", encoding="utf-8") as f:
                 user_config = yaml.safe_load(f) or {}
             self._data = _deep_merge(DEFAULTS, user_config)
+
+        # 环境变量覆盖 API Key（避免密钥明文存储在 config.yaml）
+        ai_config = self._data.get("ai", {})
+        for provider_name, prov_cfg in ai_config.items():
+            if not isinstance(prov_cfg, dict):
+                continue
+            env_key = f"{provider_name.upper()}_API_KEY"
+            env_value = os.environ.get(env_key)
+            if env_value:
+                prov_cfg["api_key"] = env_value
+                logger.info("从环境变量 %s 加载 API Key", env_key)
 
     def reload(self):
         """重新加载配置文件"""
@@ -85,6 +104,11 @@ class Settings:
     def notification(self) -> dict:
         return self._data["notification"]
 
+    @property
+    def config(self) -> dict:
+        """完整配置字典（供扩展模块读取自定义配置段）"""
+        return self._data
+
     def get(self, dot_path: str, default: Any = None) -> Any:
         """通过点号路径获取配置值，如 'collection.window_poll_interval'"""
         keys = dot_path.split(".")
@@ -106,6 +130,17 @@ class Settings:
     @property
     def db_path(self) -> Path:
         return self._resolve_path(self.storage["db_path"])
+
+    @property
+    def db_encryption_key(self) -> str | None:
+        """从环境变量获取数据库加密密钥"""
+        if not self.storage.get("encryption_enabled"):
+            return None
+        env_var = self.storage.get("encryption_key_env", "WORKTRACE_DB_KEY")
+        key = os.environ.get(env_var)
+        if not key:
+            logger.warning("数据库加密已启用但密钥未配置（环境变量 %s）", env_var)
+        return key
 
     @property
     def markdown_dir(self) -> Path:

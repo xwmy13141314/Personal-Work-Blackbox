@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import socket
+import ssl
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -25,6 +26,23 @@ DEFAULT_TIMEOUT = 120.0  # 秒（LLM 生成可能较慢）
 # 重试配置
 MAX_RETRIES = 3
 RETRY_DELAYS = [5, 15, 30]  # 秒，指数退避
+
+
+def _http_verify_context() -> ssl.SSLContext:
+    """创建 HTTPS 证书上下文，兼容 py2app 的嵌入式 Python。
+
+    certifi 的资源在部分旧打包版本中可能不存在。此时应使用 macOS 系统证书库
+    继续发起连接，而不是让识别功能因本地证书文件路径错误直接失败。
+    """
+    try:
+        import certifi
+
+        cafile = certifi.where()
+        if cafile:
+            return ssl.create_default_context(cafile=cafile)
+    except (ImportError, OSError, FileNotFoundError):
+        logger.warning("certifi 证书资源不可用，改用 macOS 系统证书库")
+    return ssl.create_default_context()
 
 
 class LLMProvider(ABC):
@@ -80,7 +98,7 @@ class OllamaProvider(LLMProvider):
             },
         }
 
-        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT, verify=_http_verify_context()) as client:
             resp = await client.post(url, json=payload)
             resp.raise_for_status()
             data = resp.json()
@@ -92,7 +110,7 @@ class OllamaProvider(LLMProvider):
     def test_connectivity(self) -> tuple[bool, str]:
         # Ollama 默认 localhost，用 HTTP 检测
         try:
-            with httpx.Client(timeout=5.0) as client:
+            with httpx.Client(timeout=5.0, verify=_http_verify_context()) as client:
                 resp = client.get(f"{self._base_url}/api/tags")
                 if resp.status_code == 200:
                     return True, "Ollama 服务可达"
@@ -126,7 +144,7 @@ class DeepSeekProvider(LLMProvider):
             "temperature": 0.3,
         }
 
-        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT, verify=_http_verify_context()) as client:
             resp = await client.post(url, json=payload, headers=headers)
             resp.raise_for_status()
             data = resp.json()
@@ -164,7 +182,7 @@ class OpenAIProvider(LLMProvider):
             "temperature": 0.3,
         }
 
-        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT, verify=_http_verify_context()) as client:
             resp = await client.post(url, json=payload, headers=headers)
             resp.raise_for_status()
             data = resp.json()
@@ -208,7 +226,7 @@ class GLMProvider(LLMProvider):
             "temperature": 0.3,
         }
 
-        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT, verify=_http_verify_context()) as client:
             resp = await client.post(url, json=payload, headers=headers)
             resp.raise_for_status()
             data = resp.json()
@@ -255,7 +273,7 @@ class OpenAICompatibleProvider(LLMProvider):
             "messages": messages,
             "temperature": 0.3,
         }
-        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT, verify=_http_verify_context()) as client:
             resp = await client.post(url, json=payload, headers=headers)
             resp.raise_for_status()
             return resp.json()["choices"][0]["message"]["content"]
@@ -273,14 +291,8 @@ class OpenAICompatibleProvider(LLMProvider):
 
 # ==================== 统一客户端 ====================
 
-PROVIDER_REGISTRY: dict[str, type[LLMProvider]] = {
-    "ollama": OllamaProvider,
-    "glm": GLMProvider,
-    "deepseek": DeepSeekProvider,
-    "openai": OpenAIProvider,
-}
-
 # 降级顺序：本地优先 → 国内云端 → 海外云端
+# 动态从配置中收集所有提供商名称，确保自定义提供商也能参与降级
 FALLBACK_ORDER = ["ollama", "glm", "deepseek", "openai"]
 
 
@@ -354,10 +366,18 @@ class LLMClient:
             except Exception as exc:
                 logger.warning("默认提供商 %s 重试耗尽后仍失败: %s", default, exc)
 
-        # 降级到其他可用提供商
-        for name in FALLBACK_ORDER:
-            if name == default or name not in self._providers:
+        # 降级到其他可用提供商（FALLBACK_ORDER + 配置中的自定义提供商）
+        tried = {default}
+        fallback_chain = list(FALLBACK_ORDER)
+        # 追加配置中存在但不在 FALLBACK_ORDER 中的自定义提供商
+        for name in self._providers:
+            if name not in fallback_chain:
+                fallback_chain.append(name)
+
+        for name in fallback_chain:
+            if name in tried or name not in self._providers:
                 continue
+            tried.add(name)
             try:
                 result = await self._call_with_retry(name, messages)
                 logger.info("降级使用提供商: %s", name)

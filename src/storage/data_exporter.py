@@ -1,0 +1,325 @@
+"""数据导出器
+
+支持将会话、文本片段、剪贴板记录导出为 CSV / JSON 格式。
+"""
+
+from __future__ import annotations
+
+import csv
+import json
+import logging
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+
+class DataExporter:
+    """数据导出器"""
+
+    def __init__(self, db):
+        self._db = db
+
+    def export_sessions_csv(self, date: str | None = None, output_path: Path | None = None) -> Path:
+        """导出会话记录为 CSV
+        
+        Args:
+            date: 指定日期（YYYY-MM-DD），None 则导出全部
+            output_path: 输出文件路径，None 则自动生成
+            
+        Returns: 导出文件路径
+        """
+        if output_path is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            suffix = f"_{date}" if date else "_all"
+            output_path = Path(f"export_sessions{suffix}_{timestamp}.csv")
+
+        sessions = self._db.query_sessions(date=date, limit=100000)
+
+        with open(output_path, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "ID", "开始时间", "结束时间", "进程名", "窗口标题",
+                "活跃时长(秒)", "空闲时长(秒)", "已过滤", "分类", "文本片段数"
+            ])
+            for s in sessions:
+                seg_count = self._db.count_text_segments(s.id)
+                category = getattr(s, "category", "其他") or "其他"
+                writer.writerow([
+                    s.id, s.start_time, s.end_time or "",
+                    s.process_name, s.window_title or "",
+                    round(s.active_seconds, 1), round(s.idle_seconds, 1),
+                    "是" if s.is_filtered else "否",
+                    category, seg_count,
+                ])
+
+        logger.info("会话 CSV 导出完成: %s (%d 条)", output_path, len(sessions))
+        return output_path
+
+    def export_sessions_json(self, date: str | None = None, output_path: Path | None = None) -> Path:
+        """导出会话记录为 JSON（含文本片段）"""
+        if output_path is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            suffix = f"_{date}" if date else "_all"
+            output_path = Path(f"export_sessions{suffix}_{timestamp}.json")
+
+        sessions = self._db.query_sessions(date=date, limit=100000)
+        data = []
+        for s in sessions:
+            segs = self._db.query_text_segments(s.id)
+            category = getattr(s, "category", "其他") or "其他"
+            data.append({
+                "id": s.id,
+                "start_time": s.start_time,
+                "end_time": s.end_time,
+                "process_name": s.process_name,
+                "window_title": s.window_title,
+                "active_seconds": round(s.active_seconds, 1),
+                "idle_seconds": round(s.idle_seconds, 1),
+                "is_filtered": s.is_filtered,
+                "category": category,
+                "text_segments": [
+                    {
+                        "timestamp": seg.timestamp,
+                        "raw_text": seg.raw_text if not seg.is_filtered else "[已过滤]",
+                        "source": seg.source,
+                        "is_filtered": seg.is_filtered,
+                        "char_count": seg.char_count,
+                    }
+                    for seg in segs
+                ],
+            })
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump({"export_time": datetime.now().isoformat(), "sessions": data}, f, ensure_ascii=False, indent=2)
+
+        logger.info("会话 JSON 导出完成: %s (%d 条)", output_path, len(sessions))
+        return output_path
+
+    def export_text_segments_csv(self, date: str | None = None, output_path: Path | None = None) -> Path:
+        """导出文本片段为 CSV"""
+        if output_path is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            suffix = f"_{date}" if date else "_all"
+            output_path = Path(f"export_segments{suffix}_{timestamp}.csv")
+
+        if date:
+            rows = self._db.query_all_text_for_date(date)
+        else:
+            # 导出全部需要全表扫描
+            with self._db._cursor() as cur:
+                cur.execute(
+                    """SELECT ts.timestamp, ts.raw_text, ts.source, ts.is_filtered,
+                        s.process_name, s.window_title
+                        FROM text_segments ts
+                        LEFT JOIN sessions s ON ts.session_id = s.id
+                        ORDER BY ts.timestamp"""
+                )
+                all_rows = cur.fetchall()
+            rows = [
+                {"timestamp": r[0], "text": r[1], "source": r[2],
+                 "is_filtered": bool(r[3]), "process_name": r[4] or "",
+                 "window_title": r[5] or ""}
+                for r in all_rows
+            ]
+
+        with open(output_path, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+            writer.writerow(["时间戳", "文本内容", "来源", "进程名", "窗口标题", "已过滤"])
+            for r in rows:
+                writer.writerow([
+                    r["timestamp"],
+                    r.get("text", ""),
+                    r.get("source", ""),
+                    r.get("process_name", ""),
+                    r.get("window_title", ""),
+                    "是" if r.get("is_filtered") else "否",
+                ])
+
+        logger.info("文本片段 CSV 导出完成: %s (%d 条)", output_path, len(rows))
+        return output_path
+
+    # 待办状态/优先级/来源 → 中文显示
+    _TODO_STATUS_CN = {"pending": "待办", "in_progress": "进行中", "done": "已完成", "cancelled": "已取消"}
+    _TODO_PRIORITY_CN = {"urgent": "紧急", "high": "高", "normal": "中", "low": "低"}
+    _TODO_SOURCE_CN = {"daily_report": "日报", "weekly_report": "周报", "monthly_report": "月报", "manual": "手动"}
+
+    def export_todos_csv(self, todos, output_path: Path | None = None) -> Path:
+        """导出待办列表为 CSV（utf-8-sig BOM，Excel/飞书多维表格/Numbers 直接打开中文不乱码）
+
+        Args:
+            todos: TodoRecord 列表
+            output_path: 输出文件路径，None 则在当前目录自动生成
+
+        Returns: 导出文件路径
+        """
+        if output_path is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_path = Path(f"export_todos_{timestamp}.csv")
+
+        with open(output_path, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "标题", "状态", "优先级", "备注", "截止日期",
+                "来源", "来源引用", "是否草稿", "创建时间", "完成时间",
+            ])
+            for t in todos:
+                writer.writerow([
+                    t.title,
+                    self._TODO_STATUS_CN.get(t.status, t.status),
+                    self._TODO_PRIORITY_CN.get(t.priority, t.priority),
+                    t.note,
+                    t.due_date,
+                    self._TODO_SOURCE_CN.get(t.source_type, t.source_type),
+                    t.source_ref,
+                    "是" if t.is_draft else "否",
+                    t.created_at,
+                    t.completed_at,
+                ])
+
+        logger.info("待办 CSV 导出完成: %s (%d 条)", output_path, len(todos))
+        return output_path
+
+    # ---- JSON 全量备份 / 导入恢复（P4 §4.10）----
+    # 字段全集（与 TodoRecord 对齐），保留原始枚举值（status/priority 不翻译），便于无损导入恢复
+    _TODO_JSON_FIELDS = (
+        "title", "status", "priority", "note", "contact_person", "due_date",
+        "source_type", "source_ref", "is_draft", "sort_order", "progress",
+        "created_at", "updated_at", "completed_at",
+    )
+
+    def export_todos_json(self, todos, output_path: Path | None = None) -> Path:
+        """导出待办列表为 JSON 全量备份（utf-8，保留原始字段值，便于导入恢复）
+
+        含 sort_order / progress / is_draft 等 CSV 不便表达的字段；
+        不导出 todo_advices（AI 建议基于当时活动，过期且需 id 重映射，恢复价值低）。
+
+        Args:
+            todos: TodoRecord 列表
+            output_path: 输出路径，None 则自动生成
+        Returns: 导出文件路径
+        """
+        if output_path is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_path = Path(f"export_todos_{timestamp}.json")
+
+        data = {
+            "export_time": datetime.now().isoformat(),
+            "version": 1,
+            "todo_count": len(todos),
+            "todos": [
+                {
+                    "title": t.title,
+                    "status": t.status,
+                    "priority": t.priority,
+                    "note": t.note,
+                    "due_date": t.due_date,
+                    "source_type": t.source_type,
+                    "source_ref": t.source_ref,
+                    "is_draft": bool(t.is_draft),
+                    "sort_order": float(getattr(t, "sort_order", 0.0) or 0.0),
+                    "progress": int(getattr(t, "progress", 0) or 0),
+                    "created_at": t.created_at,
+                    "updated_at": t.updated_at,
+                    "completed_at": t.completed_at,
+                }
+                for t in todos
+            ],
+        }
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+        logger.info("待办 JSON 导出完成: %s (%d 条)", output_path, len(todos))
+        return output_path
+
+    def import_todos_json(self, data, mode: str = "append") -> dict:
+        """从 JSON 全量备份导入待办（P4 §4.10）
+
+        Args:
+            data: 已解析的 dict / list，或 JSON 文件路径（str/Path，自动读取解析）
+            mode: append=同标题跳过（默认，安全不破坏现有）；
+                  merge=同标题更新内容字段（不动 sort_order，不打乱看板顺序）
+        Returns:
+            {ok, imported, skipped, updated, errors}
+        """
+        # 接受文件路径或已解析对象
+        if isinstance(data, (str, Path)):
+            with open(data, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        if isinstance(data, dict):
+            if "todos" not in data:
+                return {"ok": False, "error": "JSON 格式无效：缺少 todos 数组"}
+            todos_data = data["todos"]
+        else:
+            todos_data = data
+        if not isinstance(todos_data, list):
+            return {"ok": False, "error": "JSON 格式无效：todos 必须为数组"}
+
+        from src.storage.models import TodoRecord
+
+        # 现有标题 → TodoRecord 索引（去重用；含草稿）
+        existing: dict[str, TodoRecord] = {t.title: t for t in self._db.query_todos(include_drafts=True)}
+
+        imported = skipped = updated = 0
+        errors: list[str] = []
+        # merge 模式更新的内容字段（不含 sort_order，避免打乱看板顺序）
+        merge_fields = (
+            "status", "priority", "note", "contact_person", "due_date",
+            "source_type", "source_ref", "is_draft", "progress", "completed_at",
+        )
+
+        for i, item in enumerate(todos_data, 1):
+            try:
+                if not isinstance(item, dict):
+                    errors.append(f"第 {i} 条：非对象，跳过")
+                    continue
+                title = (item.get("title") or "").strip()
+                if not title:
+                    errors.append(f"第 {i} 条：标题为空，跳过")
+                    continue
+
+                if title in existing:
+                    if mode == "merge":
+                        fields = {k: item[k] for k in merge_fields if k in item}
+                        fields["updated_at"] = datetime.now().isoformat()
+                        self._db.update_todo(existing[title].id, fields)
+                        updated += 1
+                    else:
+                        skipped += 1
+                else:
+                    now = datetime.now().isoformat()
+                    rec = TodoRecord(
+                        title=title,
+                        status=item.get("status", "pending"),
+                        priority=item.get("priority", "normal"),
+                        note=item.get("note", ""),
+                        contact_person=item.get("contact_person", ""),
+                        due_date=item.get("due_date", ""),
+                        source_type=item.get("source_type", "manual"),
+                        source_ref=item.get("source_ref", ""),
+                        is_draft=bool(item.get("is_draft", False)),
+                        sort_order=0.0,  # 0 → insert_todo 自动放列尾，避免跨库 order 冲突
+                        progress=int(item.get("progress", 0) or 0),
+                        created_at=item.get("created_at") or now,
+                        updated_at=item.get("updated_at") or now,
+                        completed_at=item.get("completed_at", ""),
+                    )
+                    rec.id = self._db.insert_todo(rec)
+                    existing[title] = rec  # 防止文件内重复标题二次插入
+                    imported += 1
+            except Exception as e:
+                errors.append(f"第 {i} 条：{e}")
+
+        logger.info(
+            "待办 JSON 导入完成（mode=%s）: 导入 %d / 跳过 %d / 更新 %d / 错误 %d",
+            mode, imported, skipped, updated, len(errors),
+        )
+        return {
+            "ok": True,
+            "mode": mode,
+            "imported": imported,
+            "skipped": skipped,
+            "updated": updated,
+            "errors": errors,
+        }

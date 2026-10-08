@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "worktrace-mac"
+version = "4.3.0"
+description = "轻量化个人活动追踪与 AI 工作日志工具 · 隐私优先 · 本地存储"
+requires-python = ">=3.11"
+readme = "README.md"
+
+[project.scripts]
+personal-recorder = "personal_recorder.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]

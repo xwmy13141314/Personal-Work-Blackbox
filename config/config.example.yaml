@@ -14,6 +14,7 @@ collection:
   # 剪贴板
   clipboard_enabled: true          # 是否启用剪贴板监控
   clipboard_max_length: 10240      # 单条剪贴板记录最大长度（字节）
+  # 豆包等输入法提交的文字由输入法监听记录；WorkTrace 不读取麦克风或音频。
 
   # 空闲检测
   idle_threshold: 300              # 空闲阈值（秒）

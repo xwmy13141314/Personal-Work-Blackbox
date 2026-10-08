@@ -126,13 +126,11 @@ class SystemTray:
 
     def _open_data_dir(self, icon, item):
         import subprocess
-        import sys
-        data_dir = Path("./data")
-        data_dir.mkdir(exist_ok=True)
-        if sys.platform == "darwin":
-            subprocess.Popen(["open", str(data_dir.resolve())])
-        else:
-            subprocess.Popen(f'explorer "{data_dir.resolve()}"')
+        from src.main import get_app_root
+        data_dir = get_app_root() / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        # macOS 用 open 命令在 Finder 中打开目录
+        subprocess.Popen(["open", str(data_dir.resolve())])
 
     def _quit(self, icon, item):
         self._on_quit()

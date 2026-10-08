@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>WorkTrace</string>
+    <key>CFBundleDisplayName</key>
+    <string>职迹 WorkTrace</string>
+    <key>CFBundleIdentifier</key>
+    <string>cn.worktrace.app</string>
+    <key>CFBundleVersion</key>
+	<string>5.79.914</string>
+    <key>CFBundleShortVersionString</key>
+	<string>5.79.914</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleExecutable</key>
+    <string>WorkTrace</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>12.0</string>
+    <!-- 显示在 Dock（false=显示，true=后台菜单栏应用） -->
+    <key>LSUIElement</key>
+    <false/>
+    <!-- osascript display notification 需要 AppleEvents 权限 -->
+    <key>NSAppleEventsUsageDescription</key>
+    <string>职迹 WorkTrace 需要 AppleEvents 权限以发送系统通知与获取前台应用信息。</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>© 2026 职迹 WorkTrace</string>
+</dict>
+</plist>

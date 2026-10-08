@@ -19,11 +19,17 @@ class PrivacyFilter:
     """
 
     # 预定义正则规则
-    NUMBER_PATTERN = re.compile(r'\d{6,}')                          # 连续6位+数字
+    NUMBER_PATTERN = re.compile(r'\d{8,}')                          # 连续8位+数字（提高阈值减少误杀）
     ID_CARD_PATTERN = re.compile(r'\d{17}[\dXx]')                  # 身份证号
     PHONE_PATTERN = re.compile(r'1[3-9]\d{9}')                     # 手机号
     EMAIL_PATTERN = re.compile(r'[\w.+-]+@[\w-]+\.[\w.-]+')       # 邮箱
-    BANK_CARD_PATTERN = re.compile(r'\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}')  # 银行卡号
+    BANK_CARD_PATTERN = re.compile(r'\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{0,4}')  # 银行卡号 16-19 位
+    # 新增：常见敏感凭证模式
+    JWT_PATTERN = re.compile(r'eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+')  # JWT Token
+    API_KEY_PATTERN = re.compile(r'sk-[A-Za-z0-9]{20,}')           # OpenAI 风格 API Key
+    IPV4_PATTERN = re.compile(r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b')  # IPv4 地址
+    PRIVATE_KEY_PATTERN = re.compile(r'-----BEGIN [A-Z ]+PRIVATE KEY-----')  # PEM 私钥头
+    URL_CRED_PATTERN = re.compile(r'https?://[^:\s]+:[^@\s]+@')    # URL 内嵌凭据
 
     # 密码上下文关键词
     PASSWORD_CONTEXT_KEYWORDS = {
@@ -42,9 +48,14 @@ class PrivacyFilter:
         self._title_keywords = config.get("title_filter_keywords", [])
         self._privacy_mode_duration = config.get("privacy_mode_duration", 30)
 
-        # 编译用户自定义正则
+        # 编译用户自定义正则（容错：单条非法不影响其余）
         custom_patterns = config.get("custom_filter_patterns", [])
-        self._custom_patterns = [re.compile(p) for p in custom_patterns]
+        self._custom_patterns = []
+        for p in custom_patterns:
+            try:
+                self._custom_patterns.append(re.compile(p))
+            except re.error as e:
+                logger.warning("自定义过滤正则非法，已跳过: %s (%s)", p, e)
 
         # 隐私模式状态
         self._privacy_mode_until: float = 0.0
@@ -83,6 +94,26 @@ class PrivacyFilter:
         if any(kw in context_lower for kw in self.PASSWORD_CONTEXT_KEYWORDS):
             return "[FILTERED_PWD]", True
 
+        # JWT Token（优先匹配，避免被其他规则截断）
+        if self.JWT_PATTERN.search(result):
+            result = self.JWT_PATTERN.sub('[FILTERED_JWT]', result)
+            filtered = True
+
+        # API Key（sk-xxx 格式）
+        if self.API_KEY_PATTERN.search(result):
+            result = self.API_KEY_PATTERN.sub('[FILTERED_APIKEY]', result)
+            filtered = True
+
+        # PEM 私钥
+        if self.PRIVATE_KEY_PATTERN.search(result):
+            result = self.PRIVATE_KEY_PATTERN.sub('[FILTERED_KEY]', result)
+            filtered = True
+
+        # URL 内嵌凭据 (http://user:pass@host)
+        if self.URL_CRED_PATTERN.search(result):
+            result = self.URL_CRED_PATTERN.sub('[FILTERED_URLCRED]', result)
+            filtered = True
+
         # 身份证号（18位，优先级最高）
         if self.ID_CARD_PATTERN.search(result):
             result = self.ID_CARD_PATTERN.sub('[FILTERED_ID]', result)
@@ -101,6 +132,11 @@ class PrivacyFilter:
         # 邮箱
         if self.EMAIL_PATTERN.search(result):
             result = self.EMAIL_PATTERN.sub('[FILTERED_EMAIL]', result)
+            filtered = True
+
+        # IPv4 地址
+        if self.IPV4_PATTERN.search(result):
+            result = self.IPV4_PATTERN.sub('[FILTERED_IP]', result)
             filtered = True
 
         # 连续纯数字（疑似验证码/密码）— 放在最后

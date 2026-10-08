@@ -1,9 +1,13 @@
-"""空闲检测器 — 通过 GetLastInputInfo 检测用户空闲状态"""
+"""空闲检测器 — macOS 原生实现（Quartz CGEventSource）
+
+通过 CGEventSourceSecondsSinceLastEventType 获取距上次输入的秒数，
+判断用户空闲状态。与 Windows 版 IdleState / IdleDetector 接口一致。
+
+权限要求：无（CGEventSource 仅读取时间戳，不需要辅助功能权限）。
+"""
 
 from __future__ import annotations
 
-import ctypes
-import ctypes.wintypes as wintypes
 import logging
 import time
 from enum import Enum, auto
@@ -12,8 +16,13 @@ from typing import Callable
 
 logger = logging.getLogger(__name__)
 
-user32 = ctypes.windll.user32
-kernel32 = ctypes.windll.kernel32
+# ==================== macOS Quartz 绑定 ====================
+try:
+    import Quartz
+    _HAS_MAC_API = True
+except Exception:
+    _HAS_MAC_API = False
+    logger.warning("macOS Quartz API 不可用，空闲检测将不可用")
 
 
 class IdleState(Enum):
@@ -22,7 +31,7 @@ class IdleState(Enum):
 
 
 class IdleDetector:
-    """空闲状态检测器"""
+    """空闲状态检测器（macOS CGEventSource）"""
 
     def __init__(
         self,
@@ -52,7 +61,7 @@ class IdleDetector:
         self._stop_event.clear()
         self._thread = Thread(target=self._poll_loop, daemon=True, name="IdleDetector")
         self._thread.start()
-        logger.info("IdleDetector 已启动，阈值 %.0f 秒", self._threshold)
+        logger.info("IdleDetector 已启动（CGEventSource），阈值 %.0f 秒", self._threshold)
 
     def stop(self):
         """停止检测"""
@@ -68,10 +77,17 @@ class IdleDetector:
     @property
     def idle_seconds(self) -> float:
         """当前已空闲的秒数"""
-        last_input = self._get_last_input_time()
-        if last_input is None:
+        if not _HAS_MAC_API:
             return 0.0
-        return time.time() - last_input
+        try:
+            # kCGEventSourceStateCombinedSessionState = 1, kCGAnyInputEventType = ~0
+            # 用 getattr fallback，避免常量在某些 PyObjC 版本未导出
+            state_id = getattr(Quartz, "kCGEventSourceStateCombinedSessionState", 1)
+            event_type = getattr(Quartz, "kCGAnyInputEventType", 0xFFFFFFFFFFFFFFFF)
+            secs = Quartz.CGEventSourceSecondsSinceLastEventType(state_id, event_type)
+            return float(secs)
+        except Exception:
+            return 0.0
 
     def _poll_loop(self):
         while not self._stop_event.is_set():
@@ -97,19 +113,3 @@ class IdleDetector:
                 logger.exception("空闲检测异常")
 
             self._stop_event.wait(self._poll_interval)
-
-    @staticmethod
-    def _get_last_input_time() -> float | None:
-        """获取最后一次输入的时间戳"""
-        class LASTINPUTINFO(ctypes.Structure):
-            _fields_ = [("cbSize", wintypes.UINT), ("dwTime", wintypes.DWORD)]
-
-        lii = LASTINPUTINFO()
-        lii.cbSize = ctypes.sizeof(LASTINPUTINFO)
-
-        if user32.GetLastInputInfo(ctypes.byref(lii)):
-            # dwTime 是系统启动后的毫秒数
-            millis = kernel32.GetTickCount64() if hasattr(kernel32, 'GetTickCount64') else kernel32.GetTickCount()
-            idle_ms = millis - lii.dwTime
-            return time.time() - (idle_ms / 1000.0)
-        return None

@@ -1,0 +1,4 @@
+/* 兼容旧入口：实际构建入口使用 styles/index.css。 */
+@import './fonts.css';
+@import './tailwind.css';
+@import './theme.css';

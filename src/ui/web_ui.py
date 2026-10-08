@@ -24,16 +24,37 @@ def run_web():
     setup_logging()
 
     # 配置初始化（复刻 run_with_tray / run_gui）
-    config_path = get_app_root() / "config" / "config.yaml"
-    if not config_path.exists():
-        config_path = ensure_config()
+    # 每次启动都检查一次旧版配置迁移；只有旧版有有效 Key、用户目录仍是
+    # 占位配置时才会覆盖，已保存的用户配置永不覆盖。
+    config_path = ensure_config()
 
-    # 引擎初始化但不自动启动采集（待用户点「启动」）
+    # 引擎初始化
     engine = BlackboxEngine(config_path)
 
     from src.ui.web_api import BlackboxAPI
 
     api = BlackboxAPI(engine)
+
+    # 关闭标志：防止 _on_closing 和 _auto_start 竞态
+    _shutting_down = False
+
+    # 自动启动采集（3秒后，给 pywebview 窗口加载时间）
+    import threading
+    import time
+    def _auto_start():
+        nonlocal _shutting_down
+        time.sleep(3)
+        if _shutting_down:
+            logger.info("应用正在关闭，跳过自动启动")
+            return
+        try:
+            engine.start()
+            api._is_paused = False
+            api._recording_started_at = time.strftime("%Y-%m-%dT%H:%M:%S")
+            logger.info("采集已自动启动")
+        except Exception:
+            logger.exception("自动启动采集失败")
+    threading.Thread(target=_auto_start, daemon=True, name="AutoStart").start()
 
     # 前端产物路径（源码模式 = 项目根；打包模式 = sys._MEIPASS）
     index_path = get_bundled_root() / "web_frontend" / "index.html"
@@ -53,12 +74,45 @@ def run_web():
         height=720,
         min_size=(900, 600),
     )
-    # 窗口关闭时优雅释放引擎（含数据库）
+    # 把窗口引用注入 API，供文件保存对话框等使用
+    api.bind_window(window)
+
+    # 红色关闭按钮只隐藏窗口到 Dock；应用继续采集，不退出也不回到桌面。
+    # Dock 点击图标时恢复窗口；Dock 的“退出”则必须放行关闭事件。
     def _on_closing():
-        api.shutdown()
-        # pythonnet/.NET CLR 线程会阻止进程正常退出，强制退出确保关闭无残留
-        os._exit(0)
+        nonlocal _shutting_down
+        if not _shutting_down:
+            logger.info("窗口关闭事件触发，隐藏到 Dock")
+            window.hide()
+            # pywebview 以 False 表示取消原生关闭。这样窗口仍可由 Dock 恢复。
+            return False
+        return None
 
     window.events.closing += _on_closing
+
+    # pywebview 的 Cocoa 后端默认没有处理“点击 Dock 中已运行应用”的回调，且
+    # Dock 的“退出”会经过同一个 closing 事件。为避免二者互相拦截，在启动
+    # 原生窗口前替换其 AppDelegate：重开时显示隐藏窗口，退出时先放行关闭。
+    from webview.platforms import cocoa
+
+    _base_app_delegate = cocoa.BrowserView.AppDelegate
+
+    class WorkTraceAppDelegate(_base_app_delegate):
+        def applicationShouldHandleReopen_hasVisibleWindows_(self, app, has_visible_windows):
+            if not has_visible_windows:
+                logger.info("Dock 点击图标，恢复隐藏窗口")
+                window.show()
+            return True
+
+        def applicationShouldTerminate_(self, app):
+            nonlocal _shutting_down
+            _shutting_down = True
+            logger.info("收到 macOS 退出请求，允许应用退出")
+            return super().applicationShouldTerminate_(app)
+
+        def applicationShouldTerminateAfterLastWindowClosed_(self, app):
+            return False
+
+    cocoa.BrowserView.AppDelegate = WorkTraceAppDelegate
     logger.info("启动 Web UI（pywebview）")
     webview.start(http_server=True)

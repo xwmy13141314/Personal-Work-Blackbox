@@ -7,6 +7,9 @@ DEFAULTS = {
         "capture_hotkeys": True,
         "clipboard_enabled": True,
         "clipboard_max_length": 10240,
+        # 微信等应用不公开 AX 输入框时，允许仅对前台窗口底部输入区做本机 OCR。
+        # 图片不落盘、不上传；仅在豆包/搜狗输入法处于前台时启用。
+        "screen_ocr_fallback_enabled": True,
         "idle_threshold": 300,
     },
     "privacy": {
@@ -26,6 +29,8 @@ DEFAULTS = {
         "markdown_export_dir": "./data/logs",
         "retention_days": 90,
         "auto_archive": True,
+        "encryption_enabled": False,  # 是否启用数据库加密（需安装 sqlcipher3）
+        "encryption_key_env": "WORKTRACE_DB_KEY",  # 加密密钥的环境变量名
     },
     "ai": {
         "default_provider": "glm",
@@ -59,5 +64,10 @@ DEFAULTS = {
     "notification": {
         "on_report_generated": True,
         "on_privacy_mode": True,
+    },
+    "rest_api": {
+        "enabled": False,        # 默认关闭，用户需手动开启
+        "port": 19527,           # 默认端口
+        "host": "127.0.0.1",     # 仅本地访问
     },
 }

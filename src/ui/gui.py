@@ -272,9 +272,7 @@ class BlackboxGUI:
 
         try:
             from src.main import BlackboxEngine, get_app_root, ensure_config
-            config_path = get_app_root() / "config" / "config.yaml"
-            if not config_path.exists():
-                config_path = ensure_config()
+            config_path = ensure_config()
             self.engine = BlackboxEngine(str(config_path))
             self._log("引擎初始化完成，点击「启动」开始采集", "success")
             # 加载有数据的日期列表
@@ -596,8 +594,9 @@ class BlackboxGUI:
 
     def _open_data_dir(self):
         """打开数据目录"""
-        data_dir = Path("./data")
-        data_dir.mkdir(exist_ok=True)
+        from src.main import get_app_root
+        data_dir = get_app_root() / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
         os.startfile(str(data_dir.resolve()))
 
     def on_closing(self):

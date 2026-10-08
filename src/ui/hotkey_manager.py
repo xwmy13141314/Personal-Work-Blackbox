@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Callable
-
-from pynput import keyboard
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -27,11 +25,14 @@ class HotkeyManager:
         self._on_toggle_pause = on_toggle_pause
         self._on_export = on_export
         self._on_privacy_mode = on_privacy_mode
-        self._listener: keyboard.GlobalHotKeys | None = None
+        self._listener: Any | None = None
 
     def start(self):
         """注册全局快捷键"""
         try:
+            # 默认 Web GUI 不使用全局快捷键。仅在旧托盘入口按需导入，
+            # 避免桌面 App 启动时初始化 pynput 的 AppKit 后端。
+            from pynput import keyboard
             self._listener = keyboard.GlobalHotKeys({
                 '<ctrl>+<alt>+p': self._on_toggle_pause,
                 '<ctrl>+<alt>+r': self._on_export,

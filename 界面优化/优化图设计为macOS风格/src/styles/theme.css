@@ -1,21 +1,24 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  --font-size: 13px;
+  --font-size: 14px;
+  /* 大部分界面文字使用 Tailwind 的固定 px 字号；用 WebKit 的 zoom 统一缩放，确保设置实际生效。 */
+  --wt-font-scale: 1;
   --background: #ececec;
   --foreground: #1d1d1f;
   --card: rgba(255, 255, 255, 0.72);
   --card-foreground: #1d1d1f;
   --popover: rgba(255, 255, 255, 0.9);
   --popover-foreground: #1d1d1f;
-  --primary: #0071e3;
+  /* 霓虹丛林：橙 → 金黄 → 明黄 → 黄绿 → 草绿 */
+  --primary: #65b81e;
   --primary-foreground: #ffffff;
   --secondary: rgba(0, 0, 0, 0.06);
   --secondary-foreground: #1d1d1f;
   --muted: rgba(0, 0, 0, 0.04);
   --muted-foreground: #86868b;
-  --accent: rgba(0, 113, 227, 0.1);
-  --accent-foreground: #0071e3;
+  --accent: rgba(183, 237, 0, 0.16);
+  --accent-foreground: #4e9415;
   --destructive: #ff3b30;
   --destructive-foreground: #ffffff;
   --border: rgba(0, 0, 0, 0.08);
@@ -24,21 +27,52 @@
   --switch-background: #d1d1d6;
   --font-weight-medium: 500;
   --font-weight-normal: 400;
-  --ring: rgba(0, 113, 227, 0.4);
-  --chart-1: #0071e3;
-  --chart-2: #34c759;
-  --chart-3: #ff9f0a;
-  --chart-4: #ff3b30;
-  --chart-5: #af52de;
+  --ring: rgba(101, 184, 30, 0.42);
+  --chart-1: #ff9700;
+  --chart-2: #ffc800;
+  --chart-3: #ffe600;
+  --chart-4: #b7ed00;
+  --chart-5: #73ce22;
   --radius: 0.5rem;
   --sidebar: rgba(240, 240, 245, 0.85);
   --sidebar-foreground: #1d1d1f;
-  --sidebar-primary: #0071e3;
+  --sidebar-primary: #65b81e;
   --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: rgba(0, 113, 227, 0.08);
-  --sidebar-accent-foreground: #0071e3;
+  --sidebar-accent: rgba(183, 237, 0, 0.16);
+  --sidebar-accent-foreground: #4e9415;
   --sidebar-border: rgba(0, 0, 0, 0.08);
-  --sidebar-ring: rgba(0, 113, 227, 0.4);
+  --sidebar-ring: rgba(101, 184, 30, 0.42);
+
+  /* ==================== WorkTrace 自定义主题变量 ==================== */
+  /* 文本颜色 */
+  --wt-text: #1d1d1f;
+  --wt-text-secondary: #3a3a3c;
+  --wt-text-tertiary: #6e6e73;
+  --wt-text-muted: #86868b;
+  --wt-text-faint: #a1a1a6;
+
+  /* 强调色 */
+  --wt-accent: #65b81e;
+  --wt-accent-light: #b7ed00;
+  --wt-accent-bg: rgba(183, 237, 0, 0.18);
+  --wt-accent-gradient: linear-gradient(135deg, #ff9700 0%, #ffc800 28%, #ffe600 50%, #b7ed00 74%, #73ce22 100%);
+
+  /* 语义色 */
+  --wt-success: #73ce22;
+  --wt-danger: #FF3B30;
+  --wt-warning: #ffad00;
+
+  /* 背景色 */
+  --wt-bg: #f5f5f7;
+  --wt-bg-sidebar: #f0f0f5;
+  --wt-bg-surface: rgba(255, 255, 255, 0.7);
+  --wt-bg-sidebar-surface: rgba(236, 236, 240, 0.9);
+
+  /* 边框 */
+  --wt-border: rgba(0, 0, 0, 0.07);
+  --wt-border-light: rgba(0, 0, 0, 0.1);
+  --wt-border-faint: rgba(0, 0, 0, 0.06);
+  --wt-border-input: rgba(0, 0, 0, 0.1);
 }
 
 .dark {
@@ -126,6 +160,12 @@
 
   body {
     @apply bg-background text-foreground;
+  }
+
+  /* pywebview 的 macOS WebKit 支持 zoom。它会同步调整固定 px 文字及其行高，
+     避免仅调整 html 基准字号而让 text-[12px] 等工具类毫无变化。 */
+  #root {
+    zoom: var(--wt-font-scale);
   }
 
   /**
